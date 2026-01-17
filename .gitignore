@@ -1,0 +1,112 @@
+# ==================== 构建输出 ====================
+build/
+cmake/build/
+Debug/
+Release/
+out/
+
+# ==================== 编译产物 ====================
+*.o
+*.obj
+*.a
+*.lib
+*.exe
+*.elf
+*.bin
+*.hex
+*.map
+*.d
+*.su
+
+# ==================== CMake 生成文件 ====================
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+makefile
+*.cmake
+!CMakeLists.txt
+!CMakePresets.json
+!cmake/*.cmake
+
+# ==================== IDE 配置 ====================
+# VSCode
+.vscode/
+*.code-workspace
+
+# CLion
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# STM32CubeIDE / Eclipse
+.metadata/
+.recommenders/
+.settings/
+*.launch
+
+# STM32CubeMX
+*.ioc.bak
+*.ioc.tmp
+
+# ==================== 调试和烧录 ====================
+*.lst
+*.sym
+*.cscale
+*.dbgconf
+JLinkLog.txt
+JLinkSettings.ini
+*.svd
+
+# ==================== 操作系统文件 ====================
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+
+# Linux
+*~
+.directory
+
+# ==================== 日志和临时文件 ====================
+*.log
+*.tmp
+*.bak
+*.backup
+
+# ==================== 文档临时文件 ====================
+~$*
+*.pptx.tmp
+*.xlsx.tmp
+*.docx.tmp
+
+# ==================== Python（项目工具） ====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# ==================== 用户特定文件 ====================
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# ==================== 其他 ====================
+.history/
+*.depend
+.cproject
+.project
