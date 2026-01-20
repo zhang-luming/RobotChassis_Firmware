@@ -1,3 +1,19 @@
+/**
+ ******************************************************************************
+ * @file    comm_protocol.h
+ * @brief   通信协议模块 - 串口通信
+ *
+ * 功能说明：
+ * - 接收控制指令并分发到各模块
+ * - 提供数据发送接口
+ *
+ * 模块接口：
+ * - Comm_Init(): 初始化模块
+ * - Comm_Update(): 处理接收数据并分发指令
+ * - Comm_Send*(): 提供发送接口供其他模块调用
+ ******************************************************************************
+ */
+
 #ifndef __COMM_PROTOCOL_H
 #define __COMM_PROTOCOL_H
 
@@ -37,7 +53,7 @@ typedef struct {
 /* 串口发送缓冲 */
 extern uint8_t UART_SEND_BUF[20];
 
-/* ==================== 函数接口 ==================== */
+/* ==================== 核心接口 ==================== */
 
 /**
  * @brief 初始化通信模块
@@ -45,10 +61,18 @@ extern uint8_t UART_SEND_BUF[20];
 void Comm_Init(void);
 
 /**
- * @brief 处理接收到的控制数据
- * @note 在主循环中调用
+ * @brief 更新通信模块（每10ms调用）
+ *
+ * 功能：
+ * - 处理接收到的数据
+ * - 解析协议帧
+ * - 分发控制指令到各模块
+ *
+ * 注意：需要在主循环中每次调用
  */
-void Comm_ProcessControlData(void);
+void Comm_Update(void);
+
+/* ==================== 发送接口（供其他模块调用） ==================== */
 
 /**
  * @brief 发送欧拉角数据
@@ -80,6 +104,8 @@ void Comm_SendEncoder(int16_t *encoder);
  */
 void Comm_SendBatteryVoltage(uint16_t voltage);
 
+/* ==================== 工具函数 ==================== */
+
 /**
  * @brief 异或校验
  * @param a 数组地址
@@ -102,6 +128,15 @@ void Comm_SendBuf(USART_TypeDef *USART_COM, uint8_t *buf, uint16_t len);
  * @note 在HAL_UART_RxCpltCallback中调用
  */
 void Comm_RxCallback(UART_HandleTypeDef *huart);
+
+/* ==================== 兼容性接口（临时） ==================== */
+
+/**
+ * @brief 兼容性接口：处理接收到的控制数据
+ * @deprecated 请使用 Comm_Update() 替代
+ * @note 保留此函数以保持向后兼容
+ */
+void Comm_ProcessControlData(void);
 
 #ifdef __cplusplus
 }

@@ -133,12 +133,26 @@ int main(void) {
     Comm_Init();          /* 通信模块 */
 
     /* MPU6050 IMU初始化 */
-    if (IMU_Init() != 0) {
-        printf("MPU6050初始化失败!!!\r\n");
-        LED_SetState(LED_STATE_ERROR);  /* LED快闪表示错误 */
+    const uint8_t imu_result = IMU_Init();
+    if (imu_result != 0) {
+        printf("MPU6050初始化失败 (错误码:%d)\r\n", imu_result);
+        switch (imu_result) {
+            case 1: printf("  -> 传感器设置失败\r\n"); break;
+            case 2: printf("  -> FIFO配置失败\r\n"); break;
+            case 3: printf("  -> 采样率设置失败\r\n"); break;
+            case 4: printf("  -> DMP固件加载失败\r\n"); break;
+            case 5: printf("  -> 方向矩阵设置失败\r\n"); break;
+            case 6: printf("  -> DMP功能使能失败\r\n"); break;
+            case 7: printf("  -> FIFO速率设置失败\r\n"); break;
+            case 8: printf("  -> 传感器自检失败 (请确保底盘静止且水平放置)\r\n"); break;
+            case 9: printf("  -> DMP使能失败\r\n"); break;
+            case 10: printf("  -> MPU初始化失败\r\n"); break;
+            default: printf("  -> 未知错误\r\n"); break;
+        }
+        LED_Error();  /* LED快闪表示错误 */
     } else {
         printf("MPU6050初始化成功\r\n");
-        LED_SetState(LED_STATE_HEARTBEAT);  /* LED心跳表示正常运行 */
+        LED_Heartbeat();  /* LED心跳表示正常运行 */
     }
 
     printf("ROS底板开始运行\r\n");
@@ -155,75 +169,33 @@ int main(void) {
         {
             Run_Times++;
 
-            /* 更新LED状态 */
-            LED_Update();
+            /* ========== 系统更新（每次都执行） ========== */
+            LED_Update();           /* LED状态更新 */
+            Comm_Update();          /* 处理接收数据并分发指令 */
 
-            /* 处理串口接收的控制数据 */
-            Comm_ProcessControlData();
+            /* ========== 模块更新（按周期执行） ========== */
+            /* 每10ms执行 */
+            Motor_Update();         /* 电机PID控制 */
+            IMU_Update();           /* 更新传感器数据 */
+            Servo_Update();         /* 舵机控制（预留接口） */
 
-            /* 更新IMU数据 */
-            IMU_Update();
-
-            /* 发送IMU数据 */
-            {
-                int16_t data[3];
-
-                /* 发送欧拉角 */
-                IMU_GetEulerAngle(data);
-                Comm_SendEulerAngle(data);
-
-                /* 发送陀螺仪 */
-                IMU_GetGyro(data);
-                Comm_SendGyro(data);
-
-                /* 发送加速度 */
-                IMU_GetAccel(data);
-                Comm_SendAccel(data);
-            }
-
-            /* 编码器速度计算 - 每40毫秒计算一次 */
-            if (Run_Times % 4 == 0) {
-                int16_t encoder_values[4];
-
-                /* 更新编码器数据 */
-                Motor_UpdateEncoderDelta();
-
-                /* 获取编码器数据指针 */
-                int16_t *encoder_delta = Motor_GetEncoderDeltaArray();
-                int16_t *encoder_target = Motor_GetTargetSpeedArray();
-
-                /* PWM输出计算 */
-                int16_t motor_pwm_val = Motor_PIDControl(
-                    MOTOR_ID_A, encoder_target[0], encoder_delta[0]);
-                Motor_SetSpeed(MOTOR_ID_A, motor_pwm_val);
-
-                motor_pwm_val = Motor_PIDControl(
-                    MOTOR_ID_B, encoder_target[1], encoder_delta[1]);
-                Motor_SetSpeed(MOTOR_ID_B, motor_pwm_val);
-
-                motor_pwm_val = Motor_PIDControl(
-                    MOTOR_ID_C, encoder_target[2], encoder_delta[2]);
-                Motor_SetSpeed(MOTOR_ID_C, motor_pwm_val);
-
-                motor_pwm_val = Motor_PIDControl(
-                    MOTOR_ID_D, encoder_target[3], encoder_delta[3]);
-                Motor_SetSpeed(MOTOR_ID_D, motor_pwm_val);
-
-                printf("期望转速:%d,%d,%d,%d\r\n", encoder_delta[0], encoder_delta[1],
-                       encoder_delta[2], encoder_delta[3]);
-
-                /* 发送编码器数据 */
-                Motor_GetEncoder(encoder_values);
-                Comm_SendEncoder(encoder_values);
-            }
-
-            /* 电池电压检测 - 每200毫秒计算一次 */
+            /* 每200ms执行 */
             if (Run_Times % 20 == 0) {
-                /* 更新电池电压采样 */
-                Power_UpdateVoltage();
+                Power_Update();     /* 更新电池电压 */
+            }
 
-                /* 发送电池电压 */
-                Comm_SendBatteryVoltage(Power_GetBatteryVoltage());
+            /* ========== 数据发送（按周期发送） ========== */
+            /* 每10ms发送IMU数据 */
+            IMU_Send();
+
+            /* 每40ms发送编码器数据 */
+            if (Run_Times % 4 == 0) {
+                Motor_Send();
+            }
+
+            /* 每200ms发送电池电压 */
+            if (Run_Times % 20 == 0) {
+                Power_Send();
             }
         }
     }

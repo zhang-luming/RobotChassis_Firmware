@@ -1,19 +1,30 @@
+/**
+ ******************************************************************************
+ * @file    power_management.c
+ * @brief   电源管理模块 - 电池电压监测
+ *
+ * 功能说明：
+ * - 电池电压ADC采样
+ * - 电压数据上报
+ ******************************************************************************
+ */
+
 #include "power_management.h"
+#include "comm_protocol.h"
 #include "adc.h"
 
 /* ==================== 私有变量 ==================== */
 
 /* 电池电压值（mV） */
-static uint16_t battery_voltage = 0;
+static uint16_t g_battery_voltage = 0;
 
-/* ==================== 函数实现 ==================== */
+/* ==================== 公共接口实现 ==================== */
 
 /**
  * @brief 初始化电源管理模块
  */
-void Power_Init(void)
-{
-    battery_voltage = 0;
+void Power_Init(void) {
+    g_battery_voltage = 0;
 
     /* ADC校准 */
     HAL_ADCEx_Calibration_Start(&hadc2);
@@ -23,10 +34,15 @@ void Power_Init(void)
 }
 
 /**
- * @brief 更新电池电压采样
+ * @brief 更新电池电压
+ *
+ * 功能：
+ * - 启动ADC转换并读取值
+ * - 转换为mV单位
+ *
+ * 注意：此函数立即执行ADC采样，调用频率由main.c控制
  */
-void Power_UpdateVoltage(void)
-{
+void Power_Update(void) {
     /* 轮询转换 */
     HAL_ADC_PollForConversion(&hadc2, 50);
 
@@ -35,13 +51,32 @@ void Power_UpdateVoltage(void)
      * 3300: 参考电压 3.3V
      * 11: 分压系数
      */
-    battery_voltage = ((float)HAL_ADC_GetValue(&hadc2) / 4096) * 3300 * 11;
+    g_battery_voltage = ((float)HAL_ADC_GetValue(&hadc2) / 4096) * 3300 * 11;
 }
 
 /**
- * @brief 获取电池电压（mV）
+ * @brief 发送电池电压
+ *
+ * 直接发送电池电压到上位机，不判断时间
  */
-uint16_t Power_GetBatteryVoltage(void)
-{
-    return battery_voltage;
+void Power_Send(void) {
+    Comm_SendBatteryVoltage(g_battery_voltage);
+}
+
+/* ==================== 兼容性接口（临时） ==================== */
+
+/**
+ * @brief 兼容性接口：更新电池电压采样
+ * @deprecated 请使用 Power_Update() 替代
+ */
+void Power_UpdateVoltage(void) {
+    Power_Update();
+}
+
+/**
+ * @brief 兼容性接口：获取电池电压
+ * @deprecated 请使用 Power_Send() 替代
+ */
+uint16_t Power_GetBatteryVoltage(void) {
+    return g_battery_voltage;
 }

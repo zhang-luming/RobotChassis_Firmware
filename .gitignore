@@ -106,6 +106,7 @@ ENV/
 *.sln.docstates
 
 # ==================== 其他 ====================
+.claude/
 .history/
 *.depend
 .cproject

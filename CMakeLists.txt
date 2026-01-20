@@ -97,6 +97,33 @@ list(REMOVE_ITEM CMAKE_C_IMPLICIT_LINK_LIBRARIES ob)
 # 添加链接库
 target_link_libraries(${CMAKE_PROJECT_NAME}
         stm32cubemx
-
         # 在此添加用户定义的库
+)
+
+# ==================== 生成固件输出文件 ====================
+# 设置输出目录
+set(OUTPUT_DIR ${CMAKE_BINARY_DIR}/output)
+file(MAKE_DIRECTORY ${OUTPUT_DIR})
+
+# 生成 .hex 文件 (Intel HEX 格式)
+add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_OBJCOPY} -O ihex $<TARGET_FILE:${CMAKE_PROJECT_NAME}> ${OUTPUT_DIR}/${CMAKE_PROJECT_NAME}.hex
+    COMMENT "Building ${CMAKE_PROJECT_NAME}.hex"
+)
+
+# 生成 .bin 文件 (纯二进制格式)
+add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${CMAKE_PROJECT_NAME}> ${OUTPUT_DIR}/${CMAKE_PROJECT_NAME}.bin
+    COMMENT "Building ${CMAKE_PROJECT_NAME}.bin"
+)
+
+# 显示输出文件信息
+add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E echo ""
+    COMMAND ${CMAKE_COMMAND} -E echo "─────────────────────────────────────────"
+    COMMAND ${CMAKE_COMMAND} -E echo "固件输出文件:"
+    COMMAND ${CMAKE_COMMAND} -E echo "  ELF: $<TARGET_FILE:${CMAKE_PROJECT_NAME}>"
+    COMMAND ${CMAKE_COMMAND} -E echo "  HEX: ${OUTPUT_DIR}/${CMAKE_PROJECT_NAME}.hex"
+    COMMAND ${CMAKE_COMMAND} -E echo "  BIN: ${OUTPUT_DIR}/${CMAKE_PROJECT_NAME}.bin"
+    COMMAND ${CMAKE_COMMAND} -E echo "─────────────────────────────────────────"
 )

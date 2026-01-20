@@ -19,6 +19,7 @@ extern int16_t PID_D;  /* 微分系数 */
 
 /* ==================== 编码器配置 ==================== */
 #define ENCODER_MIDDLE 32767
+/* 注意：速度单位使用CPS（Counts Per Second），不依赖具体编码器PPR配置 */
 
 /* ==================== 电机PWM配置 ==================== */
 #define MOTOR_PWM_MAX 1439   /* PWM最大值 (对应TIM8 Period = 1439) */
