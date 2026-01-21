@@ -15,7 +15,7 @@ NC='\033[0m' # No Color
 
 # 项目配置
 PROJECT_NAME="RobotChassis_Firmware"
-BUILD_DIR="build"
+BUILD_ROOT="build"
 TOOLCHAIN_PREFIX="arm-none-eabi-"
 
 # 检测操作系统
@@ -143,7 +143,8 @@ show_help() {
 
 选项:
     -h, --help          显示此帮助信息
-    -c, --clean         清理构建目录
+    -c, --clean         清理构建目录（默认清理当前配置，使用 -a 清理所有）
+    -a, --all           配合 -c 使用，清理所有构建配置
     -f, --flash         使用 OpenOCD 烧录固件
     -d, --debug         启用调试输出
     -r, --release       构建 Release 版本（默认 Debug）
@@ -153,14 +154,15 @@ show_help() {
     release             构建发布版本 (-Os -g0)
 
 示例:
-    $0                  # 构建调试版本
-    $0 release          # 构建发布版本
-    $0 -c               # 清理构建目录
+    $0                  # 构建调试版本 (输出到 build/Debug/)
+    $0 release          # 构建发布版本 (输出到 build/Release/)
+    $0 -c               # 清理当前配置的构建目录
+    $0 -c -a            # 清理所有构建配置
     $0 -f               # 烧录固件到开发板
     $0 -c && $0         # 清理并重新构建
 
 环境变量:
-    BUILD_DIR           自定义构建目录 (默认: build)
+    BUILD_ROOT          构建根目录 (默认: build)
     OPENOCD_INTERFACE   OpenOCD 配置文件 (默认: interface/stlink.cfg)
     OPENOCD_TARGET      OpenOCD 目标配置 (默认: target/stm32f1x.cfg)
 
@@ -174,16 +176,28 @@ EOF
 
 # 清理构建目录
 clean_build() {
-    print_info "清理构建目录: ${BUILD_DIR}"
+    local clean_all=$1
 
-    if [ "$OS" = "Windows" ]; then
-        # Windows 下使用更兼容的删除方式
-        if [ -d "$BUILD_DIR" ]; then
-            rm -rf "${BUILD_DIR:?}"/*
-            rmdir "${BUILD_DIR}" 2>/dev/null || true
+    if [ "$clean_all" = true ]; then
+        print_info "清理所有构建目录: ${BUILD_ROOT}"
+        if [ "$OS" = "Windows" ]; then
+            if [ -d "$BUILD_ROOT" ]; then
+                rm -rf "${BUILD_ROOT:?}"/*
+                rmdir "${BUILD_ROOT}" 2>/dev/null || true
+            fi
+        else
+            rm -rf ${BUILD_ROOT}
         fi
     else
-        rm -rf ${BUILD_DIR}
+        print_info "清理构建目录: ${BUILD_DIR}"
+        if [ "$OS" = "Windows" ]; then
+            if [ -d "$BUILD_DIR" ]; then
+                rm -rf "${BUILD_DIR:?}"/*
+                rmdir "${BUILD_DIR}" 2>/dev/null || true
+            fi
+        else
+            rm -rf ${BUILD_DIR}
+        fi
     fi
 
     print_success "清理完成"
@@ -194,6 +208,7 @@ configure_project() {
     local build_type=$1
 
     print_info "配置项目 (构建类型: ${build_type})..."
+    print_info "输出目录: ${BUILD_DIR}"
 
     # 创建构建目录
     mkdir -p ${BUILD_DIR}
@@ -237,7 +252,8 @@ build_project() {
 
 # 显示构建信息
 show_build_info() {
-    print_info "固件信息:"
+    local build_type=$1
+    print_info "固件信息 ($build_type):"
     echo ""
 
     # ELF 文件大小
@@ -254,14 +270,14 @@ show_build_info() {
     local hex_file="${output_dir}/${PROJECT_NAME}.hex"
     if [ -f "$hex_file" ]; then
         local hex_size=$(get_file_size "$hex_file")
-        print_info "HEX 文件: output/$(basename $hex_file) ($(($hex_size / 1024))KB)"
+        print_info "HEX: ${hex_file} ($(($hex_size / 1024))KB)"
     fi
 
     # BIN 文件大小
     local bin_file="${output_dir}/${PROJECT_NAME}.bin"
     if [ -f "$bin_file" ]; then
         local bin_size=$(get_file_size "$bin_file")
-        print_info "BIN 文件: output/$(basename $bin_file) ($(($bin_size / 1024))KB)"
+        print_info "BIN: ${bin_file} ($(($bin_size / 1024))KB)"
     fi
 }
 
@@ -309,6 +325,7 @@ main() {
 
     local build_type="Debug"
     local do_clean=false
+    local clean_all=false
     local do_flash=false
     local extra_args=()
 
@@ -321,6 +338,10 @@ main() {
                 ;;
             -c|--clean)
                 do_clean=true
+                shift
+                ;;
+            -a|--all)
+                clean_all=true
                 shift
                 ;;
             -f|--flash)
@@ -351,6 +372,9 @@ main() {
         esac
     done
 
+    # 根据构建类型设置构建目录
+    BUILD_DIR="${BUILD_ROOT}/${build_type}"
+
     # 显示标题
     echo ""
     echo "╔══════════════════════════════════════════════════════════╗"
@@ -367,7 +391,7 @@ main() {
 
     # 清理构建目录
     if [ "$do_clean" = true ]; then
-        clean_build
+        clean_build $clean_all
         if [ "$do_flash" = false ] && [ ${#extra_args[@]} -eq 0 ]; then
             exit 0
         fi
@@ -381,7 +405,7 @@ main() {
 
     # 显示构建信息
     echo ""
-    show_build_info
+    show_build_info $build_type
 
     # 烧录固件
     if [ "$do_flash" = true ]; then
@@ -393,10 +417,10 @@ main() {
     print_success "构建完成！"
     echo ""
     print_info "输出文件位于:"
-    print_info "  - ${BUILD_DIR}/${PROJECT_NAME}.elf  (可执行文件，用于调试)"
-    print_info "  - ${BUILD_DIR}/output/${PROJECT_NAME}.hex  (Intel HEX 格式，用于烧录)"
-    print_info "  - ${BUILD_DIR}/output/${PROJECT_NAME}.bin  (二进制文件)"
-    print_info "  - ${BUILD_DIR}/${PROJECT_NAME}.map  (内存映射文件)"
+    print_info "  - ${BUILD_DIR}/${PROJECT_NAME}.elf"
+    print_info "  - ${BUILD_DIR}/output/${PROJECT_NAME}.hex"
+    print_info "  - ${BUILD_DIR}/output/${PROJECT_NAME}.bin"
+    print_info "  - ${BUILD_DIR}/${PROJECT_NAME}.map"
     echo ""
 }
 

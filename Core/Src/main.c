@@ -35,6 +35,7 @@
 #include "imu_data.h"
 #include "EXIT.h"
 #include "System/retarget.h"
+#include "System/timestamp.h"
 #include "led_control.h"
 
 #define Debug
@@ -112,11 +113,15 @@ int main(void) {
     MX_USART2_UART_Init();
     MX_TIM3_Init();
     MX_TIM6_Init();
+    MX_TIM7_Init();  /* 微秒时间戳定时器 */
     /* USER CODE BEGIN 2 */
 
     /* 启动系统定时器 */
     HAL_TIM_Base_Init(&htim6);
     HAL_TIM_Base_Start_IT(&htim6);
+
+    /* 初始化微秒时间戳模块 */
+    Time_Init();
 
     /* 初始化stdio重定向（printf支持） */
     RetargetInit(&huart1);  /* 传入USART1句柄，用于调试日志输出 */

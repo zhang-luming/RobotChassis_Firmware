@@ -13,7 +13,7 @@
 #include "imu_data.h"
 #include "comm_protocol.h"
 #include "user_config.h"
-#include "MPU6050.h"
+#include "mpu6050.h"
 #include "inv_mpu.h"
 
 /* ==================== 私有变量 ==================== */

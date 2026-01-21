@@ -8,6 +8,7 @@
  * - PID闭环控制
  * - PWM输出控制
  * - 编码器数据上报
+ * - 动态时间计算（自适应调用周期）
  *
  * 模块接口：
  * - Motor_Init(): 初始化模块
@@ -22,10 +23,7 @@
 #include "comm_protocol.h"
 #include "user_config.h"
 #include "tim.h"
-#include "gpio.h"
-
-/* ==================== 电机控制配置 ==================== */
-#define MOTOR_UPDATE_PERIOD_MS 10  /* 电机更新周期（毫秒），修改此值需同步调整main.c调用频率 */
+#include "timestamp.h"
 
 /* ==================== 私有变量 ==================== */
 
@@ -40,6 +38,12 @@ static int16_t g_encoder_last[MOTOR_COUNT] = {ENCODER_MIDDLE, ENCODER_MIDDLE, EN
 
 /* 编码器相对变化值（速度） */
 static int16_t g_encoder_deltas[MOTOR_COUNT] = {0};
+
+/* 上次调用时间戳（微秒） */
+static uint32_t g_last_update_time_us = 0;
+
+/* 实际调用周期（毫秒）- 动态计算 */
+static float g_update_period_ms = 10.0f;
 
 /* PID状态结构体 */
 typedef struct {
@@ -98,21 +102,39 @@ void Motor_Init(void) {
         g_motor_pid[i].bias_integral = 0;
         g_motor_pid[i].pwm_out = 0;
     }
+
+    /* 初始化时间戳 */
+    g_last_update_time_us = Time_GetUs();
 }
 
 /**
- * @brief 更新电机控制模块（每10ms调用）
+ * @brief 更新电机控制模块（自适应调用周期）
  *
  * 功能：
- * 1. 读取四路编码器当前值
- * 2. 计算编码器增量（相对速度，带溢出检测）
- * 3. 对每个电机执行PID控制
- * 4. 输出PWM到电机驱动
+ * 1. 动态计算与上次调用的时间差
+ * 2. 读取四路编码器当前值
+ * 3. 计算编码器增量（相对速度，带溢出检测）
+ * 4. 对每个电机执行PID控制
+ * 5. 输出PWM到电机驱动
+ *
+ * 注意：
+ * - 自动适应不同的调用周期（10ms、20ms、40ms等）
+ * - 动态更新g_update_period_ms用于速度转换
  */
 void Motor_Update(void) {
     int16_t current_counter;
+    uint32_t current_time_us;
+    uint32_t elapsed_us;
 
-    /* 1. 读取当前编码器值并计算增量（带溢出检测） */
+    /* 1. 计算时间差（动态） */
+    current_time_us = Time_GetUs();
+    elapsed_us = Time_Elapsed(g_last_update_time_us, current_time_us);
+    g_last_update_time_us = current_time_us;
+
+    /* 转换为毫秒（浮点数，用于精确计算） */
+    g_update_period_ms = elapsed_us / 1000.0f;
+
+    /* 2. 读取当前编码器值并计算增量（带溢出检测） */
 
     /* 电机A - TIM2 */
     current_counter = __HAL_TIM_GET_COUNTER(&htim2);
@@ -154,7 +176,7 @@ void Motor_Update(void) {
     }
     g_encoder_deltas[3] = -delta3;  /* TIM5方向相反 */
 
-    /* 2. 重置编码器计数器到中间值 */
+    /* 3. 重置编码器计数器到中间值 */
     TIM2->CNT = ENCODER_MIDDLE;
     TIM3->CNT = ENCODER_MIDDLE;
     TIM4->CNT = ENCODER_MIDDLE;
@@ -164,13 +186,13 @@ void Motor_Update(void) {
     g_encoder_last[2] = ENCODER_MIDDLE;
     g_encoder_last[3] = ENCODER_MIDDLE;
 
-    /* 3. 计算编码器累加值 */
+    /* 4. 计算编码器累加值 */
     g_encoder_accum[0] += g_encoder_deltas[0];
     g_encoder_accum[1] += g_encoder_deltas[1];
     g_encoder_accum[2] += g_encoder_deltas[2];
     g_encoder_accum[3] += g_encoder_deltas[3];
 
-    /* 4. PID控制并输出PWM */
+    /* 5. PID控制并输出PWM */
     for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
         int16_t pwm = Motor_PIDControl(i, g_target_speeds[i], g_encoder_deltas[i]);
         Motor_SetSpeed(i, pwm);
@@ -193,26 +215,28 @@ void Motor_Send(void) {
  *
  * 功能：
  * - 将centi-CPS转换为编码器增量并存储
- * - 转换公式：encoder_delta = (speed × 100) × MOTOR_UPDATE_PERIOD_MS / 1000
- *             = speed × MOTOR_UPDATE_PERIOD_MS / 10
+ * - 转换公式使用动态计算的周期：
+ *   encoder_delta = (speed × 100) × g_update_period_ms / 1000
+ *   = speed × g_update_period_ms / 10
  *
  * 注意：
  * - 使用centi-CPS（CPS/100）单位以支持更大的速度范围
+ * - g_update_period_ms是动态计算的，自适应不同调用周期
  * - 协议中传输的是CPS除以100后的值，例如：
  *   - 实际100000 CPS → 协议中发送1000
  *   - 实际50000 CPS → 协议中发送500
  *   - 实际1000 CPS → 协议中发送10
  *
- * 示例（10ms更新周期）：
- * - 协议值10 → 实际1000 CPS → 1000 × 10 / 1000 = 10 counts/10ms
- * - 协议值500 → 实际50000 CPS → 50000 × 10 / 1000 = 500 counts/10ms
- * - 协议值1000 → 实际100000 CPS → 100000 × 10 / 1000 = 1000 counts/10ms
+ * 示例（动态周期）：
+ * - 10ms调用周期，协议值10 → 10 × 10 / 10 = 10 counts/10ms
+ * - 20ms调用周期，协议值10 → 10 × 20 / 10 = 20 counts/20ms
+ * - 40ms调用周期，协议值10 → 10 × 40 / 10 = 40 counts/40ms
  */
 void Motor_ProcessSetSpeed(uint8_t motor_id, int16_t speed) {
     if (motor_id < MOTOR_COUNT) {
-        /* centi-CPS转换为编码器增量（counts/MOTOR_UPDATE_PERIOD_MS） */
+        /* centi-CPS转换为编码器增量（使用动态周期） */
         /* speed单位是CPS/100，需要乘以100转换为CPS，再转换为增量 */
-        g_target_speeds[motor_id] = (int32_t)speed * MOTOR_UPDATE_PERIOD_MS / 10;
+        g_target_speeds[motor_id] = (int16_t)(speed * g_update_period_ms / 10.0f);
     }
 }
 
@@ -240,16 +264,6 @@ void Motor_ProcessSetPID(uint8_t motor_id, int16_t kp, int16_t ki, int16_t kd) {
             PID_D = kd;
         }
     }
-}
-
-/* ==================== 兼容性接口（临时） ==================== */
-
-/**
- * @brief 兼容性接口：Motor_SetTargetSpeed
- * @deprecated 请使用 Motor_ProcessSetSpeed() 替代
- */
-void Motor_SetTargetSpeed(uint8_t motor_id, int16_t speed) {
-    Motor_ProcessSetSpeed(motor_id, speed);
 }
 
 /* ==================== 私有函数实现 ==================== */

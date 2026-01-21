@@ -23,7 +23,7 @@ extern "C" {
 void Motor_Init(void);
 
 /**
- * @brief 更新电机控制模块（每10ms调用）
+ * @brief 更新电机控制模块
  *
  * 功能：
  * - 读取编码器数据
@@ -46,13 +46,6 @@ void Motor_Update(void);
 void Motor_Send(void);
 
 /* ==================== 控制指令处理 ==================== */
-
-/**
- * @brief 处理电机速度控制指令
- * @deprecated 请使用 Motor_ProcessSetSpeed() 替代
- * @note 保留此函数以保持向后兼容，内部直接调用 Motor_ProcessSetSpeed()
- */
-void Motor_SetTargetSpeed(uint8_t motor_id, int16_t speed);
 
 /**
  * @brief 处理电机速度控制指令

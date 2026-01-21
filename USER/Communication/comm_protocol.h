@@ -37,7 +37,6 @@ extern "C" {
 #define FUNC_PID_PARAM        0x07  /* PID参数设置 */
 #define FUNC_SERVO_CONTROL    0x08  /* 舵机控制 */
 
-#define PROTOCOL_DATA_LEN     10    /* 数据长度 */
 #define RX_BUFFER_SIZE        256   /* 接收缓冲区大小 */
 
 /* ==================== 类型定义 ==================== */

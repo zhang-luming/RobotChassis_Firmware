@@ -53,6 +53,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
         # ==================== 系统支持 ====================
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/EXIT/EXIT.c
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/System/retarget.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/USER/System/timestamp.c
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/user_config.c
 
         # ==================== 功能模块 ====================
