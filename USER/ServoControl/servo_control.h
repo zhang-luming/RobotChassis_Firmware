@@ -70,15 +70,6 @@ void Servo_Send(void);
  */
 void Servo_ProcessSetAngle(uint8_t servo_id, int16_t angle);
 
-/* ==================== 兼容性接口（临时） ==================== */
-
-/**
- * @brief 兼容性接口：设置舵机角度
- * @deprecated 请使用 Servo_ProcessSetAngle() 替代
- * @note 保留此函数以保持向后兼容
- */
-void Servo_SetAngle(uint8_t servo_id, uint8_t angle);
-
 #ifdef __cplusplus
 }
 #endif

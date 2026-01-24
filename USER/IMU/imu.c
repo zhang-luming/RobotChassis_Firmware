@@ -23,6 +23,7 @@
 #include "inv_mpu.h"
 #include "timestamp.h"
 #include "System/debug.h"
+#include "MotorControl/motor_control.h"
 
 /* ==================== 私有常量定义 ==================== */
 
@@ -140,8 +141,11 @@ void IMU_IRQHandler(void) {
 #endif
     s_last_irq_timestamp_us = current_timestamp;
 
-    /* 核心操作：更新并发布数据 */
+    /* 核心操作：更新并发布IMU数据 */
     IMU_UpdateAndPublish();
+
+    /* 读取并上报编码器位置（与IMU数据同步） */
+    Motor_ReadAndReport();
 }
 
 /* ==================== 私有函数实现 ==================== */

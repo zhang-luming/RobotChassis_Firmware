@@ -10,6 +10,12 @@ extern "C" {
 /* ==================== 函数接口 ==================== */
 
 /**
+ * @brief TIM6定时器中断处理函数（由TIM6_IRQHandler调用）
+ * @note 设置10ms时基标志，供主循环使用
+ */
+void Time_TIM6IRQHandler(void);
+
+/**
  * @brief 判断10ms定时时间是否到
  * @return 1-时间到, 0-时间未到
  */

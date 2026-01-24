@@ -9,7 +9,7 @@
  *
  * 模块接口：
  * - LED_Init(): 初始化模块
- * - LED_Update(): 更新LED状态（每10ms调用一次）
+ * - LED_Update(): 更新LED状态
  * - LED_Off/On/SlowBlink/FastBlink/Heartbeat/Error(): 设置LED状态
  ******************************************************************************
  */

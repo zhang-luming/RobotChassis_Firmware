@@ -178,33 +178,26 @@ int main(void) {
         {
             Run_Times++;
 
-            /* ========== 系统更新（每次都执行） ========== */
-            LED_Update();           /* LED状态更新 */
+            /* ========== 系统更新 ========== */
             Comm_Update();          /* 处理接收数据并分发指令 */
 
-            /* ========== 模块更新（按周期执行） ========== */
-            /* 每10ms执行 */
-            Motor_Update();         /* 电机PID控制 */
-            /* IMU_Update() 已移至MPU INT中断中 */
-            Servo_Update();         /* 舵机控制（预留接口） */
+            /* 每50ms执行 */
+            if (Run_Times % 5 == 0) {
+                Motor_UpdateControl();  // 电机控制
+                Servo_Update(); // 舵机控制（预定义接口）
+            }
+
+            /* 每100ms执行 - LED状态更新 */
+            if (Run_Times % 10 == 0) {
+                LED_Update();
+            }
 
             /* 每200ms执行 */
             if (Run_Times % 20 == 0) {
                 Power_Update();     /* 更新电池电压 */
-            }
-
-            /* ========== 数据发送（按周期发送） ========== */
-            /* IMU_Send() 已移至MPU INT中断中 */
-
-            /* 每40ms发送编码器数据 */
-            if (Run_Times % 4 == 0) {
-                Motor_Send();
-            }
-
-            /* 每200ms发送电池电压 */
-            if (Run_Times % 20 == 0) {
                 Power_Send();
             }
+
         }
     }
     /* USER CODE END 3 */

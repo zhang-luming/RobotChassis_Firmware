@@ -49,8 +49,8 @@ typedef struct {
     uint8_t complete;                /* 接收完成标志 */
 } CommRx_t;
 
-/* 串口发送缓冲 */
-extern uint8_t UART_SEND_BUF[20];
+/* 串口发送缓冲 - 增大到128字节以支持更长的数据帧 */
+extern uint8_t UART_SEND_BUF[128];
 
 /* ==================== 核心接口 ==================== */
 
@@ -60,7 +60,7 @@ extern uint8_t UART_SEND_BUF[20];
 void Comm_Init(void);
 
 /**
- * @brief 更新通信模块（每10ms调用）
+ * @brief 更新通信模块
  *
  * 功能：
  * - 处理接收到的数据
@@ -70,38 +70,6 @@ void Comm_Init(void);
  * 注意：需要在主循环中每次调用
  */
 void Comm_Update(void);
-
-/* ==================== 发送接口（供其他模块调用） ==================== */
-
-/**
- * @brief 发送欧拉角数据
- * @param euler_angle 欧拉角数组[俯仰,横滚,航向]，数据已放大100倍
- */
-void Comm_SendEulerAngle(int16_t *euler_angle);
-
-/**
- * @brief 发送陀螺仪数据
- * @param gyro 陀螺仪数组[x,y,z]，单位: 0.01弧度/s
- */
-void Comm_SendGyro(int16_t *gyro);
-
-/**
- * @brief 发送加速度数据
- * @param acc 加速度数组[x,y,z]，单位: 0.01G
- */
-void Comm_SendAccel(int16_t *acc);
-
-/**
- * @brief 发送编码器数据
- * @param encoder 编码器数组[A,B,C,D]
- */
-void Comm_SendEncoder(int16_t *encoder);
-
-/**
- * @brief 发送电池电压
- * @param voltage 电池电压（mV）
- */
-void Comm_SendBatteryVoltage(uint16_t voltage);
 
 /* ==================== 工具函数 ==================== */
 
@@ -125,16 +93,19 @@ void Comm_SendBuf(USART_TypeDef *USART_COM, uint8_t *buf, uint16_t len);
  * @brief 公共接口：发送协议数据帧
  * @param func_code 功能码
  * @param data 数据指针（int16_t数组）
- * @param data_len 数据长度（字节数，最大10字节）
+ * @param data_len 数据长度（字节数，支持任意长度）
  *
  * 功能：
- * - 自动打包协议帧：[0xFC][FuncCode][Data][Checksum][0xDF]
- * - 支持任意int16_t数据
+ * - 自动打包协议帧：[0xFC][FuncCode][Data...][Checksum][0xDF]
+ * - 支持动态数据长度（不限制为10字节）
+ * - 校验位计算包括帧头、功能码和数据段
  * - 各模块可调用此接口发送数据
  *
  * 示例：
- * - Comm_SendDataFrame(FUNC_EULER_ANGLE, euler, 6);  // 3个int16_t
- * - Comm_SendDataFrame(FUNC_GYRO, gyro, 6);          // 3个int16_t
+ * - Comm_SendDataFrame(FUNC_EULER_ANGLE, euler, 6);   // 3个int16_t
+ * - Comm_SendDataFrame(FUNC_GYRO, gyro, 6);           // 3个int16_t
+ * - Comm_SendDataFrame(FUNC_ENCODER, encoders, 8);    // 4个int16_t
+ * - Comm_SendDataFrame(FUNC_BATTERY_VOLTAGE, &voltage, 2);  // 1个int16_t
  */
 void Comm_SendDataFrame(uint8_t func_code, int16_t *data, uint8_t data_len);
 
@@ -144,15 +115,6 @@ void Comm_SendDataFrame(uint8_t func_code, int16_t *data, uint8_t data_len);
  * @note 在HAL_UART_RxCpltCallback中调用
  */
 void Comm_RxCallback(UART_HandleTypeDef *huart);
-
-/* ==================== 兼容性接口（临时） ==================== */
-
-/**
- * @brief 兼容性接口：处理接收到的控制数据
- * @deprecated 请使用 Comm_Update() 替代
- * @note 保留此函数以保持向后兼容
- */
-void Comm_ProcessControlData(void);
 
 #ifdef __cplusplus
 }

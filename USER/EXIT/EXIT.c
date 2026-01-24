@@ -25,15 +25,25 @@ void delay_us(uint32_t udelay)
 /* ==================== 函数实现 ==================== */
 
 /**
- * @brief TIM6定时器中断回调
+ * @brief TIM6定时器中断处理函数（由TIM6_IRQHandler调用）
+ * @note 设置10ms时基标志，供主循环使用
+ */
+void Time_TIM6IRQHandler(void)
+{
+    tim6_timeout = 1;
+}
+
+/**
+ * @brief TIM定时器中断回调（HAL库弱定义回调）
  * @param htim TIM句柄
+ *
+ * 注意：TIM6中断已改用Time_TIM6IRQHandler()直接处理
+ * 此回调保留给其他可能使用HAL定时器回调的场景
  */
 void HAL_TIM_PeriodElapsedCallback(const TIM_HandleTypeDef *htim)
 {
-    if(htim->Instance == TIM6)  /* 定时器6基地址 */
-    {
-        tim6_timeout = 1;
-    }
+    /* TIM6已改用直接调用方式，不再在此处理 */
+    /* 如需处理其他定时器，可在此添加 */
 }
 
 /**

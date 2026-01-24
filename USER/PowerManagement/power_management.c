@@ -40,7 +40,6 @@ void Power_Init(void) {
  * - 启动ADC转换并读取值
  * - 转换为mV单位
  *
- * 注意：此函数立即执行ADC采样，调用频率由main.c控制
  */
 void Power_Update(void) {
     /* 轮询转换 */
@@ -57,26 +56,9 @@ void Power_Update(void) {
 /**
  * @brief 发送电池电压
  *
- * 直接发送电池电压到上位机，不判断时间
+ * 发送电池电压到上位机
  */
 void Power_Send(void) {
-    Comm_SendBatteryVoltage(g_battery_voltage);
-}
-
-/* ==================== 兼容性接口（临时） ==================== */
-
-/**
- * @brief 兼容性接口：更新电池电压采样
- * @deprecated 请使用 Power_Update() 替代
- */
-void Power_UpdateVoltage(void) {
-    Power_Update();
-}
-
-/**
- * @brief 兼容性接口：获取电池电压
- * @deprecated 请使用 Power_Send() 替代
- */
-uint16_t Power_GetBatteryVoltage(void) {
-    return g_battery_voltage;
+    int16_t voltage_data = (int16_t)g_battery_voltage;
+    Comm_SendDataFrame(FUNC_BATTERY_VOLTAGE, &voltage_data, 2);
 }
