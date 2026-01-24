@@ -174,9 +174,9 @@ class RobotController:
 
 # ==================== 示例程序 ====================
 
-def example_basic_control():
+def example_basic_control(port: str, baudrate: int):
     """基础控制示例"""
-    controller = RobotController('/dev/ttyUSB0')
+    controller = RobotController(port, baudrate)
 
     if not controller.connect():
         return 1
@@ -216,9 +216,9 @@ def example_basic_control():
     return 0
 
 
-def example_interactive():
+def example_interactive(port: str, baudrate: int):
     """交互式控制"""
-    controller = RobotController('/dev/ttyUSB0')
+    controller = RobotController(port, baudrate)
 
     if not controller.connect():
         return 1
@@ -302,13 +302,14 @@ def main():
     args = parser.parse_args()
 
     port = args.port or '/dev/ttyUSB0'
+    baudrate = args.baudrate
 
     if args.interactive:
         # 交互式模式
-        sys.exit(example_interactive())
+        sys.exit(example_interactive(port, baudrate))
     elif args.example:
         # 示例模式
-        sys.exit(example_basic_control())
+        sys.exit(example_basic_control(port, baudrate))
     else:
         print("请指定 --interactive 或 --example")
         return 1
