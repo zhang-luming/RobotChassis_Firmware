@@ -27,7 +27,7 @@
 
 #include "comm_protocol.h"
 #include "tim.h"
-#include "timestamp.h"
+#include "timer.h"
 #include "user_config.h"
 
 /* ==================== 私有变量 ==================== */

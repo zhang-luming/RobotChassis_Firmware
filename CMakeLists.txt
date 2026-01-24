@@ -51,9 +51,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
         USER/IMU/MPU6050/eMPL/inv_mpu_dmp_motion_driver.c
 
         # ==================== 系统支持 ====================
-        ${CMAKE_CURRENT_SOURCE_DIR}/USER/EXIT/EXIT.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/USER/System/timer.c
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/System/retarget.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/USER/System/timestamp.c
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/user_config.c
 
         # ==================== 功能模块 ====================
@@ -75,7 +74,6 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
         USER/IMU/MPU6050/eMPL
 
         # ==================== 系统支持 ====================
-        ${CMAKE_CURRENT_SOURCE_DIR}/USER/EXIT
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/System
 
         # ==================== 功能模块 ====================

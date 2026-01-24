@@ -23,9 +23,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "comm_protocol.h"
-#include "timestamp.h"
+#include "timer.h"
 #include "imu.h"
-#include "EXIT.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -244,7 +243,7 @@ void TIM6_IRQHandler(void)
   HAL_TIM_IRQHandler(&htim6);
   /* USER CODE BEGIN TIM6_IRQn 1 */
   /* 调用时基模块的中断处理 */
-  Time_TIM6IRQHandler();
+  Timer_TIM6IRQHandler();
   /* USER CODE END TIM6_IRQn 1 */
 }
 

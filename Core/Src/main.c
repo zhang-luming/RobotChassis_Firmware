@@ -33,9 +33,8 @@
 #include "power_management.h"
 #include "servo_control.h"
 #include "imu.h"
-#include "EXIT.h"
+#include "System/timer.h"
 #include "System/retarget.h"
-#include "System/timestamp.h"
 #include "System/debug.h"
 #include "led_control.h"
 
@@ -174,7 +173,7 @@ int main(void) {
         /* USER CODE END WHILE */
 
         /* USER CODE BEGIN 3 */
-        if (Judge_Time_OUT()) /* 判断10ms时间是否到了 */
+        if (Timer_IsTim6Timeout()) /* 判断10ms时间是否到了 */
         {
             Run_Times++;
 

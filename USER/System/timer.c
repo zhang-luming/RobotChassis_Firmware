@@ -1,14 +1,56 @@
 /**
  ******************************************************************************
- * @file    timestamp.c
- * @brief   微秒时间戳模块实现
+ * @file    timer.c
+ * @brief   统一定时器模块实现
+ *
+ * 功能说明：
+ * - TIM6: 10ms系统时基管理
+ * - TIM7: 微秒时间戳（32位，约1.2小时溢出周期）
+ * - 微秒延时函数
  ******************************************************************************
  */
 
-#include "timestamp.h"
+#include "timer.h"
 #include "tim.h"
 
-/* ==================== 私有变量 ==================== */
+/* ==================== TIM6：10ms系统时基 ==================== */
+
+/* TIM6中断标志 */
+static volatile uint8_t g_tim6_timeout = 0;
+
+/**
+ * @brief TIM6定时器中断处理函数（由TIM6_IRQHandler调用）
+ * @note 设置10ms时基标志，供主循环使用
+ */
+void Timer_TIM6IRQHandler(void) {
+    g_tim6_timeout = 1;
+}
+
+/**
+ * @brief 判断10ms定时时间是否到
+ * @return 1-时间到, 0-时间未到
+ */
+uint8_t Timer_IsTim6Timeout(void) {
+    if (g_tim6_timeout) {
+        g_tim6_timeout = 0;
+        return 1;
+    }
+    return 0;
+}
+
+/**
+ * @brief TIM定时器中断回调（HAL库弱定义回调）
+ * @param htim TIM句柄
+ *
+ * 注意：TIM6已改用Timer_TIM6IRQHandler()直接处理
+ *       此回调保留给其他可能使用HAL定时器回调的场景
+ */
+void HAL_TIM_PeriodElapsedCallback(const TIM_HandleTypeDef *htim) {
+    /* TIM6已改用直接调用方式，不再在此处理 */
+    /* 如需处理其他定时器，可在此添加 */
+}
+
+/* ==================== TIM7：微秒时间戳 ==================== */
 
 /**
  * @brief 时间戳高16位（由TIM7溢出中断维护）
@@ -25,8 +67,6 @@
  * - 但通过检测CNT回滚可以正确处理
  */
 static volatile uint16_t g_time_high16 = 0;
-
-/* ==================== 公共接口实现 ==================== */
 
 /**
  * @brief 初始化时间戳模块
@@ -86,9 +126,22 @@ uint32_t Time_GetUs(void) {
  * - TIM7每65536us溢出一次
  * - 在中断中递增高16位
  *
- * 注意：此函数由HAL_TIM_PeriodElapsedCallback调用
+ * 注意：此函数由TIM7_IRQHandler调用
  */
 void Time_TIM7IRQHandler(void) {
     /* 递增高16位时间戳 */
     g_time_high16++;
+}
+
+/* ==================== 工具函数 ==================== */
+
+/**
+ * @brief 微秒延时函数
+ * @param udelay 延时时间（微秒）
+ */
+void delay_us(uint32_t udelay) {
+    __IO uint32_t Delay = udelay * 72 / 8;  /* SystemCoreClock / 8U / 1000000U */
+    do {
+        __NOP();
+    } while (Delay --);
 }

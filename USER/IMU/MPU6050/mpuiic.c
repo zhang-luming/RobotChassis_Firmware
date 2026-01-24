@@ -1,5 +1,5 @@
 #include "mpuiic.h"
-#include "EXIT.h"
+#include "timer.h"
 
 // MPU IIC 延时函数
 void IIC_Delay(void)
