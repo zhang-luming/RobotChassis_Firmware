@@ -39,7 +39,7 @@ extern "C" {
 /* ==================== TIM6：10ms系统时基 ==================== */
 
 /**
- * @brief TIM6定时器中断处理函数（由TIM6_IRQHandler调用）
+ * @brief TIM6中断处理函数（由HAL_TIM_PeriodElapsedCallback调用）
  * @note 设置10ms时基标志，供主循环使用
  */
 void Timer_TIM6IRQHandler(void);
@@ -80,9 +80,8 @@ void Time_Init(void);
 uint32_t Time_GetUs(void);
 
 /**
- * @brief TIM7溢出中断回调
- *
- * @note 在TIM7_IRQHandler中调用
+ * @brief TIM7中断处理函数（由HAL_TIM_PeriodElapsedCallback调用）
+ * @note 递增微秒时间戳高16位
  */
 void Time_TIM7IRQHandler(void);
 

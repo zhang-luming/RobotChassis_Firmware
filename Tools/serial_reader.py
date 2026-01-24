@@ -15,12 +15,25 @@
 - 帧尾：0xDF
 """
 
-import serial
-import serial.tools.list_ports
-import struct
 import sys
+import struct
 from typing import Optional, Tuple, List
 from datetime import datetime
+
+# 确保导入的是 pyserial 而非标准库的 serial
+try:
+    import serial
+    import serial.tools.list_ports
+except ImportError:
+    print("错误: 未找到 pyserial 模块")
+    print("请运行: pip install pyserial")
+    sys.exit(1)
+
+# 验证是 pyserial 而非其他 serial 模块
+if not hasattr(serial, 'Serial'):
+    print("错误: 导入的 serial 模块不正确")
+    print("请确保安装了 pyserial: pip install pyserial")
+    sys.exit(1)
 
 
 # ==================== 协议定义 ====================

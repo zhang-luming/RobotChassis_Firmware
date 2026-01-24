@@ -39,15 +39,22 @@ uint8_t Timer_IsTim6Timeout(void) {
 }
 
 /**
- * @brief TIM定时器中断回调（HAL库弱定义回调）
+ * @brief TIM周期溢出回调（HAL库弱函数）
  * @param htim TIM句柄
  *
- * 注意：TIM6已改用Timer_TIM6IRQHandler()直接处理
- *       此回调保留给其他可能使用HAL定时器回调的场景
+ * 处理的定时器：
+ * - TIM6: 10ms系统时基
+ * - TIM7: 微秒时间戳溢出
  */
 void HAL_TIM_PeriodElapsedCallback(const TIM_HandleTypeDef *htim) {
-    /* TIM6已改用直接调用方式，不再在此处理 */
-    /* 如需处理其他定时器，可在此添加 */
+    if (htim->Instance == TIM6) {
+        /* 10ms时基标志 */
+        Timer_TIM6IRQHandler();
+    }
+    else if (htim->Instance == TIM7) {
+        /* 微秒时间戳高16位递增 */
+        Time_TIM7IRQHandler();
+    }
 }
 
 /* ==================== TIM7：微秒时间戳 ==================== */

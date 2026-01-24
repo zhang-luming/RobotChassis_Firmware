@@ -17,6 +17,7 @@
 #include "tim.h"
 #include "motor_control.h"
 #include "servo_control.h"
+#include "System/debug.h"
 
 /* ==================== 私有变量 ==================== */
 
@@ -30,6 +31,11 @@ static CommRx_t g_comm_rx = {
 
 /* 串口发送缓冲 - 增大到128字节 */
 uint8_t UART_SEND_BUF[128];
+
+/* 调试统计 */
+static uint32_t g_rx_byte_count = 0;     /* 接收字节计数 */
+static uint32_t g_rx_frame_count = 0;    /* 接收完整帧计数 */
+static uint32_t g_rx_checksum_error = 0; /* 校验错误计数 */
 
 /* ==================== 公共接口实现 ==================== */
 
@@ -57,9 +63,13 @@ void Comm_Update(void) {
     if (g_comm_rx.complete == 1) {
         uint8_t func_code = g_comm_rx.buffer[1];  /* 功能码 */
 
+        DEBUG_INFO("[Comm] 收到帧: FC=0x%02X, Len=%d", func_code, g_comm_rx.index);
+
         switch (func_code) {
             case FUNC_SERVO_CONTROL:  /* 舵机控制 0x08 */
             {
+                DEBUG_INFO("[Comm] 舵机控制: s1=%d, s2=%d",
+                          g_comm_rx.buffer[2], g_comm_rx.buffer[3]);
                 /* 调用舵机模块的Process函数 */
                 Servo_ProcessSetAngle(0, g_comm_rx.buffer[2]);  /* 舵机1 */
                 Servo_ProcessSetAngle(1, g_comm_rx.buffer[3]);  /* 舵机2 */
@@ -74,6 +84,8 @@ void Comm_Update(void) {
                 speed[2] = (int16_t)((g_comm_rx.buffer[6] << 8) | g_comm_rx.buffer[7]);
                 speed[3] = (int16_t)((g_comm_rx.buffer[8] << 8) | g_comm_rx.buffer[9]);
 
+                DEBUG_INFO("[Comm] 电机速度: A=%d, B=%d, C=%d, D=%d",
+                          speed[0], speed[1], speed[2], speed[3]);
                 /* 调用电机模块的Process函数 */
                 Motor_ProcessSetSpeed(0, speed[0]);
                 Motor_ProcessSetSpeed(1, speed[1]);
@@ -88,6 +100,7 @@ void Comm_Update(void) {
                 int16_t ki = (int16_t)((g_comm_rx.buffer[4] << 8) | g_comm_rx.buffer[5]);
                 int16_t kd = (int16_t)((g_comm_rx.buffer[6] << 8) | g_comm_rx.buffer[7]);
 
+                DEBUG_INFO("[Comm] PID参数: Kp=%d, Ki=%d, Kd=%d", kp, ki, kd);
                 /* 调用电机模块的Process函数 */
                 /* 为4个电机设置相同的PID参数 */
                 for (uint8_t i = 0; i < 4; i++) {
@@ -97,10 +110,12 @@ void Comm_Update(void) {
             }
 
             default:
+                DEBUG_WARN("[Comm] 未知功能码: 0x%02X", func_code);
                 break;
         }
 
         g_comm_rx.complete = 0;
+        g_rx_frame_count++;
     }
 }
 
@@ -111,15 +126,27 @@ void Comm_Update(void) {
  */
 void Comm_RxCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART2) {
+        g_rx_byte_count++;
+
+        /* 调试：每收到一个字节都记录（仅前100字节） */
+        if (g_rx_byte_count <= 100) {
+            DEBUG_VERBOSE("[RX%d] 0x%02X idx=%d", g_rx_byte_count, g_comm_rx.byte, g_comm_rx.index);
+        }
+
         if (g_comm_rx.index >= 255) {  /* 溢出判断 */
+            DEBUG_WARN("[Comm_RX] 缓冲区溢出");
             g_comm_rx.index = 0;
             memset(g_comm_rx.buffer, 0x00, sizeof(g_comm_rx.buffer));
-            /* 不在中断中使用printf，避免栈溢出和死锁 */
         } else if (g_comm_rx.index == 0 && g_comm_rx.complete == 0) {  /* 接收首位 */
             if (g_comm_rx.byte == PROTOCOL_HEADER) {
                 g_comm_rx.buffer[g_comm_rx.index] = g_comm_rx.byte;
                 g_comm_rx.index++;
+                DEBUG_INFO("[Comm_RX] 帧头 idx=1", g_comm_rx.index);
             } else {
+                /* 收到非帧头字节，可能是数据不同步 */
+                if (g_rx_byte_count % 100 == 1) {  /* 限制打印频率 */
+                    DEBUG_VERBOSE("[Comm_RX] 非帧头: 0x%02X", g_comm_rx.byte);
+                }
                 g_comm_rx.index = 0;
             }
         } else if (g_comm_rx.index == 1) {  /* 接收功能位 */
@@ -127,7 +154,10 @@ void Comm_RxCallback(UART_HandleTypeDef *huart) {
             if (g_comm_rx.byte >= 0x01 && g_comm_rx.byte <= 0x08) {
                 g_comm_rx.buffer[g_comm_rx.index] = g_comm_rx.byte;
                 g_comm_rx.index++;
+                DEBUG_INFO("[Comm_RX] FC=0x%02X idx=2", g_comm_rx.byte);
             } else {
+                DEBUG_WARN("[Comm_RX] 无效功能码: 0x%02X (期望0x01-0x08)", g_comm_rx.byte);
+                DEBUG_INFO("[Comm_RX] 重置状态机");
                 g_comm_rx.index = 0;
             }
         } else if (g_comm_rx.index > 1) {  /* 接收数据、校验和帧尾 */
@@ -141,10 +171,23 @@ void Comm_RxCallback(UART_HandleTypeDef *huart) {
                 uint8_t calculated_checksum = Comm_XORCheck(g_comm_rx.buffer, checksum_len);
                 uint8_t received_checksum = g_comm_rx.buffer[checksum_len];
 
+                DEBUG_INFO("[Comm_RX] 帧尾 Len=%d Calc=0x%02X Recv=0x%02X",
+                          g_comm_rx.index, calculated_checksum, received_checksum);
+
                 if (calculated_checksum == received_checksum) {
                     g_comm_rx.complete = 1;
+                    DEBUG_INFO("[Comm_RX] ✓ 完整帧接收成功");
                 } else {
                     /* 校验错误，丢弃帧 */
+                    g_rx_checksum_error++;
+                    DEBUG_WARN("[Comm_RX] ✗ 校验错误: Calc=0x%02X, Recv=0x%02X",
+                              calculated_checksum, received_checksum);
+                    /* 打印原始帧数据帮助调试 */
+                    DEBUG_INFO("[Comm_RX] 帧数据: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+                              g_comm_rx.buffer[0], g_comm_rx.buffer[1], g_comm_rx.buffer[2],
+                              g_comm_rx.buffer[3], g_comm_rx.buffer[4], g_comm_rx.buffer[5],
+                              g_comm_rx.buffer[6], g_comm_rx.buffer[7], g_comm_rx.buffer[8],
+                              g_comm_rx.buffer[9], g_comm_rx.buffer[10], g_comm_rx.buffer[11]);
                     g_comm_rx.index = 0;
                 }
             }
@@ -153,6 +196,24 @@ void Comm_RxCallback(UART_HandleTypeDef *huart) {
 
     /* 重新启动接收中断 */
     HAL_UART_Receive_IT(&huart2, &g_comm_rx.byte, 1);
+}
+
+/**
+ * @brief UART接收完成回调（HAL库弱函数）
+ * @param huart UART句柄
+ *
+ * 处理的串口：
+ * - USART2: 控制指令接收
+ *
+ * 注意：
+ * - USART1 仅用于调试输出，不处理接收数据
+ */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+    /* 仅处理 USART2 的接收中断 */
+    if (huart->Instance == USART2) {
+        Comm_RxCallback(huart);
+    }
+    /* USART1 不处理接收数据 */
 }
 
 /* ==================== 发送函数实现 ==================== */

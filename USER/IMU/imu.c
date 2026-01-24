@@ -148,6 +148,19 @@ void IMU_IRQHandler(void) {
     Motor_ReadAndReport();
 }
 
+/**
+ * @brief GPIO外部中断回调（HAL库弱函数）
+ * @param GPIO_Pin 触发中断的GPIO引脚
+ *
+ * 处理的中断：
+ * - PC12 (MPU_INT): MPU6050 DMP数据就绪
+ */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+    if (GPIO_Pin == MPU_INT_Pin) {
+        IMU_IRQHandler();
+    }
+}
+
 /* ==================== 私有函数实现 ==================== */
 
 /**
