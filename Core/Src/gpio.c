@@ -52,7 +52,7 @@ void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOC, MOTOR_C_IN1_Pin|MOTOR_C_IN2_Pin|MOTOR_B_IN1_Pin|MOTOR_B_IN2_Pin
-                          |MOTOR_A_IN2_Pin|MOTOR_A_IN1_Pin|MPU_INT_Pin, GPIO_PIN_RESET);
+                          |MOTOR_A_IN2_Pin|MOTOR_A_IN1_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, MOTOR_D_IN1_Pin|MOTOR_D_IN2_Pin, GPIO_PIN_RESET);
@@ -61,13 +61,23 @@ void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pins : MOTOR_C_IN1_Pin MOTOR_C_IN2_Pin MOTOR_B_IN1_Pin MOTOR_B_IN2_Pin
-                           MOTOR_A_IN2_Pin MOTOR_A_IN1_Pin MPU_INT_Pin */
+                           MOTOR_A_IN2_Pin MOTOR_A_IN1_Pin */
   GPIO_InitStruct.Pin = MOTOR_C_IN1_Pin|MOTOR_C_IN2_Pin|MOTOR_B_IN1_Pin|MOTOR_B_IN2_Pin
-                          |MOTOR_A_IN2_Pin|MOTOR_A_IN1_Pin|MPU_INT_Pin;
+                          |MOTOR_A_IN2_Pin|MOTOR_A_IN1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : MPU_INT_Pin (PC12) - EXTI中断输入模式 */
+  GPIO_InitStruct.Pin = MPU_INT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;  // 下降沿触发 (MPU6050 INT低电平有效)
+  GPIO_InitStruct.Pull = GPIO_PULLUP;           // 上拉电阻
+  HAL_GPIO_Init(MPU_INT_GPIO_Port, &GPIO_InitStruct);
+
+  /* EXTI interrupt init */
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);  // 最高优先级
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
   /*Configure GPIO pin : KEY_GPIO_Pin */
   GPIO_InitStruct.Pin = KEY_GPIO_Pin;

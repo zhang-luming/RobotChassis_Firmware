@@ -2910,8 +2910,8 @@ u8 mpu_dmp_init(void) {
         res = dmp_set_orientation(inv_orientation_matrix_to_scalar(gyro_orientation));
         //设置陀螺仪方向
         if (res)return 5;
-        res = dmp_enable_feature(DMP_FEATURE_6X_LP_QUAT | DMP_FEATURE_TAP | //设置dmp功能
-                                 DMP_FEATURE_ANDROID_ORIENT | DMP_FEATURE_SEND_RAW_ACCEL |
+        res = dmp_enable_feature(DMP_FEATURE_6X_LP_QUAT |
+                                 DMP_FEATURE_SEND_RAW_ACCEL |
                                  DMP_FEATURE_SEND_CAL_GYRO |
                                  DMP_FEATURE_GYRO_CAL);
         if (res)return 6;
@@ -2925,42 +2925,64 @@ u8 mpu_dmp_init(void) {
     return 0;
 }
 
-//得到dmp处理后的数据(注意,本函数需要比较多堆栈,局部变量有点多)
-//pitch:俯仰角 精度:0.1°   范围:-90.0° <---> +90.0°
-//roll:横滚角  精度:0.1°   范围:-180.0°<---> +180.0°
-//yaw:航向角   精度:0.1°   范围:-180.0°<---> +180.0°
-//返回值:0,正常
-//    其他,失败
-u8 mpu_dmp_get_data(float *pitch, float *roll, float *yaw) {
+/**
+ * @brief 获取DMP处理后的数据（姿态角 + 传感器数据）
+ *
+ * @param pitch 俯仰角（度），范围: -90.0° ~ +90.0°
+ * @param roll 横滚角（度），范围: -180.0° ~ +180.0°
+ * @param yaw 航向角（度），范围: -180.0° ~ +180.0°
+ * @param gyro DMP校准后的陀螺仪数据[x,y,z]（可选，NULL表示不获取）
+ * @param accel DMP处理的加速度数据[x,y,z]（可选，NULL表示不获取）
+ * @return 0-成功, 其他-失败
+ *
+ * 注意：
+ * - gyro 和 accel 来自FIFO，是DMP处理后的数据
+ * - gyro 数据已去除零偏（启用了GYRO_CAL功能）
+ * - accel 数据是原始加速度
+ * - 参数为NULL时，对应数据不会被返回
+ */
+u8 mpu_dmp_get_data(float *pitch, float *roll, float *yaw,
+                    short *gyro, short *accel) {
     unsigned long sensor_timestamp;
-    short gyro[3], accel[3], sensors;
+    short local_gyro[3], local_accel[3];
     unsigned char more;
     long quat[4];
-    if (dmp_read_fifo(gyro, accel, quat, &sensor_timestamp, &sensors, &more))return 1;
-    /* Gyro and accel data are written to the FIFO by the DMP in chip frame and hardware units.
-     * This behavior is convenient because it keeps the gyro and accel outputs of dmp_read_fifo and mpu_read_fifo consistent.
-    **/
-    /*if (sensors & INV_XYZ_GYRO )
-    send_packet(PACKET_TYPE_GYRO, gyro);
-    if (sensors & INV_XYZ_ACCEL)
-    send_packet(PACKET_TYPE_ACCEL, accel); */
-    /* Unlike gyro and accel, quaternions are written to the FIFO in the body frame, q30.
-     * The orientation is set by the scalar passed to dmp_set_orientation during initialization.
-    **/
-    if (sensors & INV_WXYZ_QUAT) {
-        float q3 = 0.0f;
-        float q2 = 0.0f;
-        float q1 = 0.0f;
-        float q0 = 1.0f;
-        q0 = quat[0] / q30; //q30格式转换为浮点数
-        q1 = quat[1] / q30;
-        q2 = quat[2] / q30;
-        q3 = quat[3] / q30;
-        //计算得到俯仰角/横滚角/航向角
-        *roll = atan2(2 * q2 * q3 + 2 * q0 * q1, -2 * q1 * q1 - 2 * q2 * q2 + 1) * 57.3;
-        *pitch = asin(-2 * q1 * q3 + 2 * q0 * q2) * 57.3;
-        *yaw = atan2(2 * (q1 * q2 + q0 * q3), q0 * q0 + q1 * q1 - q2 * q2 - q3 * q3) *
-               57.3;
-    } else return 2;
+    short sensors;
+
+    if (dmp_read_fifo(local_gyro, local_accel, quat,
+                      &sensor_timestamp, &sensors, &more)) {
+        return 1;
+    }
+
+    /* 检查是否有四元数数据 */
+    if (!(sensors & INV_WXYZ_QUAT)) {
+        return 2;
+    }
+
+    /* 转换四元数为欧拉角 */
+    float q0 = quat[0] / q30;
+    float q1 = quat[1] / q30;
+    float q2 = quat[2] / q30;
+    float q3 = quat[3] / q30;
+
+    *roll = atan2(2 * q2 * q3 + 2 * q0 * q1,
+                  -2 * q1 * q1 - 2 * q2 * q2 + 1) * 57.3;
+    *pitch = asin(-2 * q1 * q3 + 2 * q0 * q2) * 57.3;
+    *yaw = atan2(2 * (q1 * q2 + q0 * q3),
+                q0 * q0 + q1 * q1 - q2 * q2 - q3 * q3) * 57.3;
+
+    /* 如果需要传感器数据，复制到输出参数 */
+    if (gyro != NULL && (sensors & INV_XYZ_GYRO)) {
+        gyro[0] = local_gyro[0];
+        gyro[1] = local_gyro[1];
+        gyro[2] = local_gyro[2];
+    }
+
+    if (accel != NULL && (sensors & INV_XYZ_ACCEL)) {
+        accel[0] = local_accel[0];
+        accel[1] = local_accel[1];
+        accel[2] = local_accel[2];
+    }
+
     return 0;
 }

@@ -203,6 +203,35 @@ void Comm_SendBuf(USART_TypeDef *USART_COM, uint8_t *buf, uint16_t len) {
 }
 
 /**
+ * @brief 公共接口：发送协议数据帧
+ */
+void Comm_SendDataFrame(uint8_t func_code, int16_t *data, uint8_t data_len) {
+    /* 构建协议帧 */
+    UART_SEND_BUF[0] = PROTOCOL_HEADER;
+    UART_SEND_BUF[1] = func_code;
+
+    /* 复制数据（int16_t转uint8_t，大端序） */
+    uint8_t data_idx = 2;
+    for (uint8_t i = 0; i < data_len; i += 2) {
+        int16_t value = data[i / 2];
+        UART_SEND_BUF[data_idx++] = (value >> 8) & 0xFF;
+        UART_SEND_BUF[data_idx++] = value & 0xFF;
+    }
+
+    /* 填充剩余字节为0 */
+    while (data_idx < 10) {
+        UART_SEND_BUF[data_idx++] = 0;
+    }
+
+    /* 计算校验和 */
+    UART_SEND_BUF[10] = Comm_XORCheck(UART_SEND_BUF, 10);
+    UART_SEND_BUF[11] = PROTOCOL_TAIL;
+
+    /* 发送 */
+    Comm_SendBuf(USART2, UART_SEND_BUF, 12);
+}
+
+/**
  * @brief 发送欧拉角数据
  */
 void Comm_SendEulerAngle(int16_t *euler_angle) {

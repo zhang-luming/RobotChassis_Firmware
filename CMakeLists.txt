@@ -61,7 +61,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/MotorControl/motor_control.c
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/PowerManagement/power_management.c
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/ServoControl/servo_control.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/USER/IMU/imu_data.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/USER/IMU/imu.c
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/LedControl/led_control.c
 )
 

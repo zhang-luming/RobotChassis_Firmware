@@ -122,6 +122,23 @@ uint8_t Comm_XORCheck(uint8_t *a, uint8_t len);
 void Comm_SendBuf(USART_TypeDef *USART_COM, uint8_t *buf, uint16_t len);
 
 /**
+ * @brief 公共接口：发送协议数据帧
+ * @param func_code 功能码
+ * @param data 数据指针（int16_t数组）
+ * @param data_len 数据长度（字节数，最大10字节）
+ *
+ * 功能：
+ * - 自动打包协议帧：[0xFC][FuncCode][Data][Checksum][0xDF]
+ * - 支持任意int16_t数据
+ * - 各模块可调用此接口发送数据
+ *
+ * 示例：
+ * - Comm_SendDataFrame(FUNC_EULER_ANGLE, euler, 6);  // 3个int16_t
+ * - Comm_SendDataFrame(FUNC_GYRO, gyro, 6);          // 3个int16_t
+ */
+void Comm_SendDataFrame(uint8_t func_code, int16_t *data, uint8_t data_len);
+
+/**
  * @brief 串口接收中断回调
  * @param huart UART句柄
  * @note 在HAL_UART_RxCpltCallback中调用

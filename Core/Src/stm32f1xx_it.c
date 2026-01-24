@@ -24,6 +24,7 @@
 /* USER CODE BEGIN Includes */
 #include "comm_protocol.h"
 #include "timestamp.h"
+#include "imu.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -261,5 +262,21 @@ void TIM7_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+
+/**
+  * @brief This function handles EXTI line[15:10] interrupts.
+  *         PC12 (MPU_INT) 使用此中断线
+  */
+void EXTI15_10_IRQHandler(void)
+{
+  /* USER CODE BEGIN EXTI15_10_IRQn 0 */
+
+  /* USER CODE END EXTI15_10_IRQn 0 */
+  HAL_GPIO_EXTI_IRQHandler(MPU_INT_Pin);
+  /* USER CODE BEGIN EXTI15_10_IRQn 1 */
+  /* 调用IMU中断处理回调 */
+  IMU_IRQHandler();
+  /* USER CODE END EXTI15_10_IRQn 1 */
+}
 
 /* USER CODE END 1 */

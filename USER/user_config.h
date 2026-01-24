@@ -31,6 +31,18 @@ extern int16_t PID_D;  /* 微分系数 */
 #define SERVO_MIN_ANGLE 0      /* 最小角度 0度 */
 #define SERVO_MAX_ANGLE 180    /* 最大角度 180度 */
 
+/* ==================== 调试配置 ==================== */
+#define DEBUG_ENABLE           /* 启用调试输出（取消注释以启用） */
+#define DEBUG_LEVEL DEBUG_LEVEL_VERBOSE  /* 调试级别：INFO/WARN/ERROR/VERBOSE */
+                                    /* VERBOSE会输出所有调试信息（包括频繁的中断统计） */
+
+/* 调试级别说明：
+ * DEBUG_LEVEL_INFO     - 只输出重要信息（系统状态、错误等）
+ * DEBUG_LEVEL_WARN     - 输出警告和错误
+ * DEBUG_LEVEL_ERROR    - 只输出错误
+ * DEBUG_LEVEL_VERBOSE  - 输出所有调试信息（包括频繁打印的统计数据）
+ */
+
 #ifdef __cplusplus
 }
 #endif

@@ -12,7 +12,7 @@ uint8_t MPU_Init(void) {
     MPU_Write_Byte(MPU_PWR_MGMT1_REG, 0X00); // 唤醒MPU6050
     MPU_Write_Byte(MPU_GYRO_CFG_REG, 0X18); // 陀螺仪传感器,±2000dps
     MPU_Write_Byte(MPU_ACCEL_CFG_REG, 0X00); // 加速度传感器,±2g
-    MPU_Write_Byte(MPU_SAMPLE_RATE_REG, 19); // 设置采样率50Hz = 1000 / (1 + 19)
+    MPU_Write_Byte(MPU_SAMPLE_RATE_REG, 9); // 设置采样率(100Hz, 1000/(9+1)=100Hz)
     MPU_Write_Byte(MPU_CFG_REG, 4); // 设置数字低通滤波器
     MPU_Write_Byte(MPU_INT_EN_REG, 0X00); // 关闭所有中断
     MPU_Write_Byte(MPU_USER_CTRL_REG, 0X00); // I2C主模式关闭
@@ -21,10 +21,9 @@ uint8_t MPU_Init(void) {
     const uint8_t res = MPU_Read_Byte(MPU_DEVICE_ID_REG);
     if (res == MPU_ADDR) // 器件ID正确
     {
-        printf("器件ID读取正确\r\n");
         MPU_Write_Byte(MPU_PWR_MGMT1_REG, 0X01); // 设置CLKSEL,PLL X轴为参考
         MPU_Write_Byte(MPU_PWR_MGMT2_REG, 0X00); // 加速度与陀螺仪都工作
-        MPU_Write_Byte(MPU_SAMPLE_RATE_REG, 19); // 设置采样率为50Hz
+        MPU_Write_Byte(MPU_SAMPLE_RATE_REG, 9); // 设置采样率为100Hz (1000/(9+1)=100Hz)
         MPU_Write_Byte(MPU_CFG_REG, 4); // 设置数字低通滤波器
         return 0;
     } else

@@ -96,7 +96,7 @@ MPU6050是一款集成了3轴陀螺仪和3轴加速度计的6轴运动处理组�
 | SCL | PB12 | I2C时钟 | GPIO模拟I2C |
 | SDA | PB13 | I2C数据 | GPIO模拟I2C |
 | AD0 | GND | 地址选择 | 接地→I2C地址0x68 |
-| INT | - | 中断引脚 | 本项目未使用 |
+| INT | PC12 | 中断引脚 | EXTI中断输入，下降沿触发 |
 
 **I2C地址**：0x68（7位地址），8位读写地址为0xD0/0xD1
 
@@ -182,9 +182,9 @@ uint8_t MPU_Init(void)
 | 4 | 唤醒MPU6050 | PWR_MGMT1_REG | 0x00 | 退出睡眠模式 |
 | 5 | 配置陀螺仪量程 | GYRO_CFG_REG | 0x18 | ±2000dps（最灵敏） |
 | 6 | 配置加速度计量程 | ACCEL_CFG_REG | 0x00 | ±2G（最灵敏） |
-| 7 | 设置采样率 | SAMPLE_RATE_REG | 19 | 50Hz（1kHz/(1+19)） |
+| 7 | 设置采样率 | SAMPLE_RATE_REG | 9 | 100Hz (1000/(9+1)=100Hz) |
 | 8 | 配置低通滤波器 | CFG_REG | 4 | 截止频率约42Hz |
-| 9 | 关闭所有中断 | INT_EN_REG | 0x00 | 本项目使用轮询模式 |
+| 9 | 配置DMP中断 | INT_EN_REG | 0x02 | 使能DMP数据就绪中断 |
 | 10 | 关闭I2C主模式 | USER_CTRL_REG | 0x00 | 不使用I2C主控功能 |
 | 11 | 关闭FIFO | FIFO_EN_REG | 0x00 | 初始不使用FIFO |
 | 12 | 配置中断引脚 | INTBP_CFG_REG | 0x80 | INT引脚低电平有效 |
@@ -206,10 +206,14 @@ uint8_t MPU_Init(void)
 
 **采样率计算**：
 ```
-采样率 = 陀螺仪输出率 / (1 + SMPLRT_DIV)
-        = 1000Hz / (1 + 19)
-        = 50Hz
+基础采样率 = 陀螺仪输出率 / (1 + SMPLRT_DIV)
+           = 1000Hz / (1 + 9)
+           = 100Hz
 ```
+
+**注意**：此设置与DMP输出速率保持一致（DEFAULT_MPU_HZ = 100）
+
+实际DMP输出率 = DEFAULT_MPU_HZ = 100Hz（见 inv_mpu.h）
 
 **数字低通滤波器** (CFG_REG = 4):
 - 截止频率：42Hz
@@ -512,11 +516,9 @@ static signed char gyro_orientation[9] = {
 
 ```c
 res = dmp_enable_feature(
-    DMP_FEATURE_6X_LP_QUAT |      // 6轴低功耗四元数
-    DMP_FEATURE_TAP |             // 点击检测
-    DMP_FEATURE_ANDROID_ORIENT |  // Android方向识别
-    DMP_FEATURE_SEND_RAW_ACCEL |  // 发送原始加速度数据
-    DMP_FEATURE_SEND_CAL_GYRO |   // 发送校准后的陀螺仪数据
+    DMP_FEATURE_6X_LP_QUAT |      // 6轴低功耗四元数（必须）
+    DMP_FEATURE_SEND_RAW_ACCEL |  // 发送原始加速度数据到FIFO
+    DMP_FEATURE_SEND_CAL_GYRO |   // 发送校准后的陀螺仪数据到FIFO
     DMP_FEATURE_GYRO_CAL          // 陀螺仪自动校准
 );
 ```
@@ -528,42 +530,38 @@ res = dmp_enable_feature(
 - **LP（Low Power）**：低功耗模式
 - **QUAT**：输出四元数而非欧拉角
 - **作用**：这是姿态解算的主要功能
-
-**DMP_FEATURE_TAP**：
-- 检测设备的点击动作
-- 可区分X/Y/Z轴的单双击
-- 应用场景：手机翻转静音等
-
-**DMP_FEATURE_ANDROID_ORIENT**：
-- Android设备的4个方向识别
-- 竖屏/横屏/倒置等
-- 本项目中作用不大
+- **必须保留** ✅
 
 **DMP_FEATURE_SEND_RAW_ACCEL**：
 - FIFO中包含原始加速度计数据
-- 未经过滤波或校准
-- 用于获取原始传感器值
+- DMP处理的加速度数据
+- 用于获取加速度传感器值
+- **建议保留**（如需从FIFO获取）
 
 **DMP_FEATURE_SEND_CAL_GYRO**：
 - FIFO中包含校准后的陀螺仪数据
-- 已去除零偏
-- 精度高于原始数据
+- 已去除零偏，精度高于原始数据
+- **建议保留**（如需从FIFO获取）
 
 **DMP_FEATURE_GYRO_CAL**：
 - 启用陀螺仪自动校准功能
 - DMP会自动计算并补偿陀螺仪零偏
-- 随时间推移，精度会提高
+- 不写入FIFO，仅内部使用
+- **推荐保留** ✅（提高长期稳定性）
 
-**为什么需要这些功能？**
+**已移除的功能**：
+- ~~DMP_FEATURE_TAP~~：点击检测（机器人不需要）
+- ~~DMP_FEATURE_ANDROID_ORIENT~~：Android方向识别（机器人不需要）
+
+**为什么保留这些功能？**
 - **6X_LP_QUAT**：必须的，提供姿态信息
-- **GYRO_CAL**：提高长期稳定性
-- **SEND_RAW_ACCEL/SEND_CAL_GYRO**：获取传感器原始数据用于监控
-- **TAP/ANDROID_ORIENT**：可选功能，本项目启用但未使用
+- **GYRO_CAL**：提高长期稳定性，无需手动校准
+- **SEND_RAW_ACCEL/SEND_CAL_GYRO**：从FIFO获取传感器数据（可选）
 
 **性能影响**：
-- 启用功能越多，DMP计算量越大
-- 需要在功能和性能间权衡
-- 最小配置仅需6X_LP_QUAT
+- 移除TAP和ANDROID_ORIENT后，DMP计算负担减少
+- 如果不需要从FIFO获取原始数据，可以移除SEND_RAW_ACCEL和SEND_CAL_GYRO
+- 最小配置仅需：6X_LP_QUAT + GYRO_CAL
 
 #### 步骤9：设置DMP输出速率
 
@@ -1228,7 +1226,7 @@ if (accel_magnitude > 2.0) {
 | I2C地址 | 0x68 | 硬件地址 | 改变AD0引脚接法 |
 | 陀螺仪量程 | ±2000dps | GYRO_CFG_REG=0x18 | 改变灵敏度 |
 | 加速度计量程 | ±2G | ACCEL_CFG_REG=0x00 | 改变灵敏度 |
-| 采样率 | 50Hz | SAMPLE_RATE_REG=19 | 影响数据更新速度 |
+| 采样率 | 100Hz | DEFAULT_MPU_HZ=100 | DMP输出速率，影响数据更新速度 |
 | DLPF | 42Hz | CFG_REG=4 | 影响噪声过滤 |
 | DMP输出率 | 100Hz | DEFAULT_MPU_HZ=100 | 姿态数据更新率 |
 
@@ -1336,7 +1334,8 @@ if (accel_magnitude > 2.0) {
 
 ---
 
-**文档版本**：v1.0
-**更新日期**：2026-01-16
+**文档版本**：v1.1
+**更新日期**：2026-01-24
 **适用项目**：RobotChassis_Firmware
 **作者**：基于代码分析整理
+**更新说明**：更新为100Hz DMP输出，添加中断驱动模式说明

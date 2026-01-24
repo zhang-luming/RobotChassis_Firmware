@@ -32,13 +32,13 @@
 #include "motor_control.h"
 #include "power_management.h"
 #include "servo_control.h"
-#include "imu_data.h"
+#include "imu.h"
 #include "EXIT.h"
 #include "System/retarget.h"
 #include "System/timestamp.h"
+#include "System/debug.h"
 #include "led_control.h"
 
-#define Debug
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -126,7 +126,7 @@ int main(void) {
     /* 初始化stdio重定向（printf支持） */
     RetargetInit(&huart1);  /* 传入USART1句柄，用于调试日志输出 */
 
-    printf("系统初始化开始...\r\n");
+    DEBUG_INFO("系统初始化开始...\r\n");
 
     /* 初始化LED控制模块 */
     LED_Init();
@@ -140,27 +140,31 @@ int main(void) {
     /* MPU6050 IMU初始化 */
     const uint8_t imu_result = IMU_Init();
     if (imu_result != 0) {
-        printf("MPU6050初始化失败 (错误码:%d)\r\n", imu_result);
+        DEBUG_ERROR("MPU6050初始化失败 (错误码:%d)\r\n", imu_result);
         switch (imu_result) {
-            case 1: printf("  -> 传感器设置失败\r\n"); break;
-            case 2: printf("  -> FIFO配置失败\r\n"); break;
-            case 3: printf("  -> 采样率设置失败\r\n"); break;
-            case 4: printf("  -> DMP固件加载失败\r\n"); break;
-            case 5: printf("  -> 方向矩阵设置失败\r\n"); break;
-            case 6: printf("  -> DMP功能使能失败\r\n"); break;
-            case 7: printf("  -> FIFO速率设置失败\r\n"); break;
-            case 8: printf("  -> 传感器自检失败 (请确保底盘静止且水平放置)\r\n"); break;
-            case 9: printf("  -> DMP使能失败\r\n"); break;
-            case 10: printf("  -> MPU初始化失败\r\n"); break;
-            default: printf("  -> 未知错误\r\n"); break;
+            case 1: DEBUG_ERROR("  -> 传感器设置失败\r\n"); break;
+            case 2: DEBUG_ERROR("  -> FIFO配置失败\r\n"); break;
+            case 3: DEBUG_ERROR("  -> 采样率设置失败\r\n"); break;
+            case 4: DEBUG_ERROR("  -> DMP固件加载失败\r\n"); break;
+            case 5: DEBUG_ERROR("  -> 方向矩阵设置失败\r\n"); break;
+            case 6: DEBUG_ERROR("  -> DMP功能使能失败\r\n"); break;
+            case 7: DEBUG_ERROR("  -> FIFO速率设置失败\r\n"); break;
+            case 8: DEBUG_ERROR("  -> 传感器自检失败 (请确保底盘静止且水平放置)\r\n"); break;
+            case 9: DEBUG_ERROR("  -> DMP使能失败\r\n"); break;
+            case 10: DEBUG_ERROR("  -> MPU初始化失败\r\n"); break;
+            default: DEBUG_ERROR("  -> 未知错误\r\n"); break;
         }
         LED_Error();  /* LED快闪表示错误 */
     } else {
-        printf("MPU6050初始化成功\r\n");
+        DEBUG_INFO("MPU6050初始化成功\r\n");
+
         LED_Heartbeat();  /* LED心跳表示正常运行 */
     }
 
-    printf("ROS底板开始运行\r\n");
+    DEBUG_INFO("ROS底板开始运行\r\n");
+
+    /* 启用IMU中断处理（在主循环开始后才启用，避免阻塞初始化） */
+    IMU_SetEnabled(1);
 
     /* USER CODE END 2 */
 
@@ -181,7 +185,7 @@ int main(void) {
             /* ========== 模块更新（按周期执行） ========== */
             /* 每10ms执行 */
             Motor_Update();         /* 电机PID控制 */
-            IMU_Update();           /* 更新传感器数据 */
+            /* IMU_Update() 已移至MPU INT中断中 */
             Servo_Update();         /* 舵机控制（预留接口） */
 
             /* 每200ms执行 */
@@ -190,8 +194,7 @@ int main(void) {
             }
 
             /* ========== 数据发送（按周期发送） ========== */
-            /* 每10ms发送IMU数据 */
-            IMU_Send();
+            /* IMU_Send() 已移至MPU INT中断中 */
 
             /* 每40ms发送编码器数据 */
             if (Run_Times % 4 == 0) {
