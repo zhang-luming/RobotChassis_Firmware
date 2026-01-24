@@ -107,48 +107,46 @@ void Comm_Update(void) {
 /**
  * @brief 串口接收中断回调
  * @param huart UART句柄
+ * @note 在中断中调用，避免使用printf等耗时操作
  */
 void Comm_RxCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART2) {
         if (g_comm_rx.index >= 255) {  /* 溢出判断 */
             g_comm_rx.index = 0;
             memset(g_comm_rx.buffer, 0x00, sizeof(g_comm_rx.buffer));
-            HAL_UART_Transmit(&huart1, (uint8_t *)"串口2数据溢出\r\n", 17, 0xFFFF);
+            /* 不在中断中使用printf，避免栈溢出和死锁 */
         } else if (g_comm_rx.index == 0 && g_comm_rx.complete == 0) {  /* 接收首位 */
-            if (g_comm_rx.byte == 0xFC) {
+            if (g_comm_rx.byte == PROTOCOL_HEADER) {
                 g_comm_rx.buffer[g_comm_rx.index] = g_comm_rx.byte;
                 g_comm_rx.index++;
             } else {
                 g_comm_rx.index = 0;
-                printf("串口2接收错误：起始位\r\n");
             }
         } else if (g_comm_rx.index == 1) {  /* 接收功能位 */
-            if (g_comm_rx.byte == 0x08 || g_comm_rx.byte == 0x06 || g_comm_rx.byte == 0x07) {
+            // 接受所有有效的功能码 (0x01-0x08)
+            if (g_comm_rx.byte >= 0x01 && g_comm_rx.byte <= 0x08) {
                 g_comm_rx.buffer[g_comm_rx.index] = g_comm_rx.byte;
                 g_comm_rx.index++;
             } else {
                 g_comm_rx.index = 0;
-                printf("串口2接收错误：功能位\r\n");
             }
-        } else if (g_comm_rx.index > 1 && g_comm_rx.index < 10) {  /* 数据位 */
+        } else if (g_comm_rx.index > 1) {  /* 接收数据、校验和帧尾 */
             g_comm_rx.buffer[g_comm_rx.index] = g_comm_rx.byte;
             g_comm_rx.index++;
-        } else if (g_comm_rx.index == 10) {  /* 校验位 */
-            if (Comm_XORCheck(g_comm_rx.buffer, 10) == g_comm_rx.byte) {
-                g_comm_rx.buffer[g_comm_rx.index] = g_comm_rx.byte;
-                g_comm_rx.index++;
-            } else {
-                g_comm_rx.index = 0;
-                printf("串口2接收错误：校验位\r\n");
-            }
-        } else if (g_comm_rx.index == 11) {  /* 结束位 */
-            if (g_comm_rx.byte == 0xDF) {
-                g_comm_rx.buffer[g_comm_rx.index] = g_comm_rx.byte;
-                g_comm_rx.complete = 1;
-                printf("串口2接收完成\r\n");
-                g_comm_rx.index = 0;
-            } else {
-                g_comm_rx.index = 0;
+
+            /* 检查是否接收到帧尾 */
+            if (g_comm_rx.byte == PROTOCOL_TAIL) {
+                /* 计算校验和（不包括帧尾） */
+                uint8_t checksum_len = g_comm_rx.index - 1;  // 减去帧尾
+                uint8_t calculated_checksum = Comm_XORCheck(g_comm_rx.buffer, checksum_len);
+                uint8_t received_checksum = g_comm_rx.buffer[checksum_len];
+
+                if (calculated_checksum == received_checksum) {
+                    g_comm_rx.complete = 1;
+                } else {
+                    /* 校验错误，丢弃帧 */
+                    g_comm_rx.index = 0;
+                }
             }
         }
     }
