@@ -233,18 +233,7 @@ void Motor_UpdateControl(void) {
  *   encoder_delta = (speed × 100) × g_update_period_ms / 1000
  *   = speed × g_update_period_ms / 10
  *
- * 注意：
- * - 使用centi-CPS（CPS/100）单位以支持更大的速度范围
- * - g_update_period_ms是动态计算的，自适应不同调用周期
- * - 协议中传输的是CPS除以100后的值，例如：
- *   - 实际100000 CPS → 协议中发送1000
- *   - 实际50000 CPS → 协议中发送500
- *   - 实际1000 CPS → 协议中发送10
- *
- * 示例（动态周期）：
- * - 10ms调用周期，协议值10 → 10 × 10 / 10 = 10 counts/10ms
- * - 20ms调用周期，协议值10 → 10 × 20 / 10 = 20 counts/20ms
- * - 40ms调用周期，协议值10 → 10 × 40 / 10 = 40 counts/40ms
+ * 100 缩放的意义：协议帧中每个电机只有两字节，不进行放大数值对于编码器计数的量级来说太小
  */
 void Motor_ProcessSetSpeed(uint8_t motor_id, int16_t speed) {
   if (motor_id < MOTOR_COUNT) {
@@ -252,6 +241,40 @@ void Motor_ProcessSetSpeed(uint8_t motor_id, int16_t speed) {
     /* speed单位是CPS/100，需要乘以100转换为CPS，再转换为增量 */
     g_target_speeds[motor_id] = (int16_t)(speed * g_update_period_ms / 10.0f);
   }
+}
+
+/**
+ * @brief 处理电机速度控制帧（从通信协议调用）
+ * @param frame 帧数据指针
+ * @param frame_len 帧长度
+ *
+ * 帧格式：[FC][0x06][速度A高][速度A低][速度B高][速度B低][速度C高][速度C低][速度D高][速度D低][Checksum][DF]
+ * 索引：  0    1     2      3       4      5       6      7       8      9      10       11
+ *
+ * 功能：
+ * - 从帧中解析4个电机的速度（大端序int16_t）
+ * - 单位：centi-CPS（CPS/100）
+ * - 转换为编码器增量并存储
+ */
+void Motor_ProcessSpeedFrame(uint8_t *frame, uint16_t frame_len) {
+  /* 帧数据从索引2开始，格式：4个int16_t（大端序） */
+  uint8_t *data = &frame[2];
+
+  /* 解析4个电机的速度 */
+  for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
+    /* 大端序解析int16_t */
+    int16_t speed = (int16_t)((data[i * 2] << 8) | data[i * 2 + 1]);
+
+    /* 应用速度设置（包含单位转换） */
+    Motor_ProcessSetSpeed(i, speed);
+  }
+
+  /* 调试输出 */
+  printf("[Motor] 速度设置: A=%d, B=%d, C=%d, D=%d (centi-CPS)\r\n",
+         (int16_t)((data[0] << 8) | data[1]),
+         (int16_t)((data[2] << 8) | data[3]),
+         (int16_t)((data[4] << 8) | data[5]),
+         (int16_t)((data[6] << 8) | data[7]));
 }
 
 /**

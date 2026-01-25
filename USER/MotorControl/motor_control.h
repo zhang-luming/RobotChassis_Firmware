@@ -37,7 +37,7 @@ void Motor_Init(void);
 void Motor_ReadAndReport(void);
 
 /**
- * @brief 执行电机控制（在TIM6中断中调用）
+ * @brief 执行电机控制
  *
  * 功能：
  * - 计算时间差（自适应调用周期）
@@ -45,10 +45,6 @@ void Motor_ReadAndReport(void);
  * - 执行PID控制
  * - 输出PWM
  *
- * 注意：
- * - 此函数可在较低频率下执行（如25Hz）
- * - 包含所有控制相关的计算
- * - 不涉及数据上报
  */
 void Motor_UpdateControl(void);
 
@@ -82,6 +78,17 @@ void Motor_UpdateControl(void);
  * - 足够覆盖大多数应用场景
  */
 void Motor_ProcessSetSpeed(uint8_t motor_id, int16_t speed);
+
+/**
+ * @brief 处理电机速度控制帧（从通信协议调用）
+ * @param frame 帧数据指针
+ * @param frame_len 帧长度
+ *
+ * 功能：
+ * - 从通信帧中解析4个电机的速度
+ * - 调用Motor_ProcessSetSpeed设置每个电机速度
+ */
+void Motor_ProcessSpeedFrame(uint8_t *frame, uint16_t frame_len);
 
 /**
  * @brief 处理PID参数设置指令
