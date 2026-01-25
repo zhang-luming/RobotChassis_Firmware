@@ -71,13 +71,14 @@ void Comm_Init(void) {
  * - 分发控制指令到各模块
  */
 void Comm_Update(void) {
-    /* ========== 调试：打印接收到的字节 ========== */
+    /* ========== 调试：打印接收到的完整帧 ========== */
     if (g_debug_rx_ready) {
-        printf("[UART_RX] 接收到 %d 字节: ", g_debug_rx_len);
+        printf("[UART_RX] 完整帧 %d 字节: ", g_debug_rx_len);
         for (uint8_t i = 0; i < g_debug_rx_len && i < DEBUG_RX_BUF_SIZE; i++) {
             printf("%02X ", g_debug_rx_buf[i]);
         }
         printf("\r\n");
+        printf("[State] index=%d complete=%d\r\n", g_comm_rx.index, g_comm_rx.complete);
         g_debug_rx_ready = 0;
         g_debug_rx_len = 0;
     }
@@ -248,7 +249,11 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
         if (g_debug_rx_len < DEBUG_RX_BUF_SIZE) {
             g_debug_rx_buf[g_debug_rx_len++] = g_comm_rx.byte;
         }
-        g_debug_rx_ready = 1;  /* 标记有新数据，将在主循环中打印 */
+
+        /* 只在接收到帧尾时才打印，避免频繁打印 */
+        if (g_comm_rx.byte == PROTOCOL_TAIL) {
+            g_debug_rx_ready = 1;  /* 标记有完整帧，将在主循环中打印 */
+        }
 
         /* ========== 正常处理流程 ========== */
         Comm_RxCallback(huart);
