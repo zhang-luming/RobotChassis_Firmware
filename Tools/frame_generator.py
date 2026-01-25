@@ -142,7 +142,11 @@ def interactive_mode():
                     continue
 
                 try:
-                    speed_a, speed_b, speed_c, speed_d = speeds
+                    # 转换为整数（电机速度通常是整数）
+                    speed_a = int(speeds[0])
+                    speed_b = int(speeds[1])
+                    speed_c = int(speeds[2])
+                    speed_d = int(speeds[3])
                     hex_str, checksum = generate_motor_frame(speed_a, speed_b, speed_c, speed_d)
 
                     print()
@@ -160,7 +164,7 @@ def interactive_mode():
                     print("=" * 70)
 
                 except ValueError as e:
-                    print(f"错误: 输入必须是数字")
+                    print(f"错误: 输入必须是整数")
                     print(f"  {e}")
 
                 print()
@@ -179,7 +183,10 @@ def interactive_mode():
                     continue
 
                 try:
-                    kp, ki, kd = params
+                    # 转换为浮点数以支持小数输入
+                    kp = float(params[0])
+                    ki = float(params[1])
+                    kd = float(params[2])
                     hex_str, kp_val, ki_val, kd_val, checksum = generate_pid_frame(kp, ki, kd)
 
                     print()
