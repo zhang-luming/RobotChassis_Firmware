@@ -37,6 +37,12 @@ static uint32_t g_rx_byte_count = 0;     /* 接收字节计数 */
 static uint32_t g_rx_frame_count = 0;    /* 接收完整帧计数 */
 static uint32_t g_rx_checksum_error = 0; /* 校验错误计数 */
 
+/* 调试缓冲区 - 在中断中记录，在主循环中打印 */
+#define DEBUG_RX_BUF_SIZE 32
+static uint8_t g_debug_rx_buf[DEBUG_RX_BUF_SIZE];
+static uint8_t g_debug_rx_len = 0;
+static volatile uint8_t g_debug_rx_ready = 0;
+
 /* ==================== 公共接口实现 ==================== */
 
 /**
@@ -60,6 +66,17 @@ void Comm_Init(void) {
  * - 分发控制指令到各模块
  */
 void Comm_Update(void) {
+    /* ========== 调试：打印接收到的字节 ========== */
+    if (g_debug_rx_ready) {
+        printf("[UART_RX] 接收到 %d 字节: ", g_debug_rx_len);
+        for (uint8_t i = 0; i < g_debug_rx_len && i < DEBUG_RX_BUF_SIZE; i++) {
+            printf("%02X ", g_debug_rx_buf[i]);
+        }
+        printf("\r\n");
+        g_debug_rx_ready = 0;
+        g_debug_rx_len = 0;
+    }
+
     if (g_comm_rx.complete == 1) {
         uint8_t func_code = g_comm_rx.buffer[1];  /* 功能码 */
 
@@ -192,18 +209,18 @@ void Comm_RxCallback(UART_HandleTypeDef *huart) {
  *
  * 注意：
  * - USART1 仅用于调试输出，不处理接收数据
+ * - 在中断中不使用printf，避免影响UART接收
  */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     /* 仅处理 USART2 的接收中断 */
     if (huart->Instance == USART2) {
         g_rx_byte_count++;  /* 字节计数 */
 
-        /* ========== 调试：直接打印接收到的字节 ========== */
-        printf("[UART2_IRQ] #%lu RX: 0x%02X ('%c') SR=0x%04X\r\n",
-               g_rx_byte_count,
-               g_comm_rx.byte,
-               (g_comm_rx.byte >= 32 && g_comm_rx.byte <= 126) ? g_comm_rx.byte : '.',
-               huart2.Instance->SR);  /* 打印UART状态寄存器 */
+        /* 将接收到的字节保存到调试缓冲区 */
+        if (g_debug_rx_len < DEBUG_RX_BUF_SIZE) {
+            g_debug_rx_buf[g_debug_rx_len++] = g_comm_rx.byte;
+        }
+        g_debug_rx_ready = 1;  /* 标记有新数据 */
 
         /* 暂时注释掉正常处理流程，只测试接收功能 */
         // Comm_RxCallback(huart);
@@ -211,10 +228,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     /* USART1 不处理接收数据 */
 
     /* 重新启动接收中断 */
-    HAL_StatusTypeDef status = HAL_UART_Receive_IT(&huart2, &g_comm_rx.byte, 1);
-    if (status != HAL_OK) {
-        printf("[UART2_IRQ] 重启接收失败! Status=%d\r\n", status);
-    }
+    HAL_UART_Receive_IT(&huart2, &g_comm_rx.byte, 1);
 }
 
 /* ==================== 发送函数实现 ==================== */
