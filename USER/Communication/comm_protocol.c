@@ -207,10 +207,13 @@ void Comm_RxCallback(UART_HandleTypeDef *huart) {
 
             /* 检查是否接收到帧尾 */
             if (g_comm_rx.byte == PROTOCOL_TAIL) {
-                /* 计算校验和（不包括帧尾） */
-                uint8_t checksum_len = g_comm_rx.index - 1;  // 减去帧尾
-                uint8_t calculated_checksum = Comm_XORCheck(g_comm_rx.buffer, checksum_len);
-                uint8_t received_checksum = g_comm_rx.buffer[checksum_len];
+                /* 协议帧格式：[FC][Func][Data8字节][Checksum][DF]
+                 * 索引:        0   1    2~9       10     11
+                 * 校验和是前10个字节(0~9)的XOR，位于索引10
+                 */
+                uint8_t checksum_index = g_comm_rx.index - 2;  // 校验和位置：12 - 2 = 10
+                uint8_t calculated_checksum = Comm_XORCheck(g_comm_rx.buffer, checksum_index);
+                uint8_t received_checksum = g_comm_rx.buffer[checksum_index];
 
                 /* 校验和调试信息（保存到全局变量，在主循环中打印） */
                 g_debug_checksum_calc = calculated_checksum;
