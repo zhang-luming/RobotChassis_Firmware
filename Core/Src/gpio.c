@@ -76,7 +76,13 @@ void MX_GPIO_Init(void)
   HAL_GPIO_Init(MPU_INT_GPIO_Port, &GPIO_InitStruct);
 
   /* EXTI interrupt init */
-  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);  // 最高优先级
+  /* 注意: 降低IMU中断优先级，避免抢占USART2接收中断 */
+  /* 中断优先级配置:
+   * - USART2: Priority 0,0 (最高，保证串口接收不被打断)
+   * - EXTI15_10 (IMU): Priority 1,0 (次高)
+   * - TIM6: Priority 2,0 (系统时基)
+   */
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 1, 0);  // 次高优先级
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
   /*Configure GPIO pin : KEY_GPIO_Pin */

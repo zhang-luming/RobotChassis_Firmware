@@ -128,25 +128,15 @@ void Comm_RxCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART2) {
         g_rx_byte_count++;
 
-        /* 调试：每收到一个字节都记录（仅前100字节） */
-        if (g_rx_byte_count <= 100) {
-            DEBUG_VERBOSE("[RX%d] 0x%02X idx=%d", g_rx_byte_count, g_comm_rx.byte, g_comm_rx.index);
-        }
-
+        /* 最小化处理，不打印日志 */
         if (g_comm_rx.index >= 255) {  /* 溢出判断 */
-            DEBUG_WARN("[Comm_RX] 缓冲区溢出");
             g_comm_rx.index = 0;
             memset(g_comm_rx.buffer, 0x00, sizeof(g_comm_rx.buffer));
         } else if (g_comm_rx.index == 0 && g_comm_rx.complete == 0) {  /* 接收首位 */
             if (g_comm_rx.byte == PROTOCOL_HEADER) {
                 g_comm_rx.buffer[g_comm_rx.index] = g_comm_rx.byte;
                 g_comm_rx.index++;
-                DEBUG_INFO("[Comm_RX] 帧头 idx=1", g_comm_rx.index);
             } else {
-                /* 收到非帧头字节，可能是数据不同步 */
-                if (g_rx_byte_count % 100 == 1) {  /* 限制打印频率 */
-                    DEBUG_VERBOSE("[Comm_RX] 非帧头: 0x%02X", g_comm_rx.byte);
-                }
                 g_comm_rx.index = 0;
             }
         } else if (g_comm_rx.index == 1) {  /* 接收功能位 */
@@ -154,10 +144,7 @@ void Comm_RxCallback(UART_HandleTypeDef *huart) {
             if (g_comm_rx.byte >= 0x01 && g_comm_rx.byte <= 0x08) {
                 g_comm_rx.buffer[g_comm_rx.index] = g_comm_rx.byte;
                 g_comm_rx.index++;
-                DEBUG_INFO("[Comm_RX] FC=0x%02X idx=2", g_comm_rx.byte);
             } else {
-                DEBUG_WARN("[Comm_RX] 无效功能码: 0x%02X (期望0x01-0x08)", g_comm_rx.byte);
-                DEBUG_INFO("[Comm_RX] 重置状态机");
                 g_comm_rx.index = 0;
             }
         } else if (g_comm_rx.index > 1) {  /* 接收数据、校验和帧尾 */
@@ -171,30 +158,19 @@ void Comm_RxCallback(UART_HandleTypeDef *huart) {
                 uint8_t calculated_checksum = Comm_XORCheck(g_comm_rx.buffer, checksum_len);
                 uint8_t received_checksum = g_comm_rx.buffer[checksum_len];
 
-                DEBUG_INFO("[Comm_RX] 帧尾 Len=%d Calc=0x%02X Recv=0x%02X",
-                          g_comm_rx.index, calculated_checksum, received_checksum);
-
                 if (calculated_checksum == received_checksum) {
                     g_comm_rx.complete = 1;
-                    DEBUG_INFO("[Comm_RX] ✓ 完整帧接收成功");
+                    g_rx_frame_count++;
                 } else {
                     /* 校验错误，丢弃帧 */
                     g_rx_checksum_error++;
-                    DEBUG_WARN("[Comm_RX] ✗ 校验错误: Calc=0x%02X, Recv=0x%02X",
-                              calculated_checksum, received_checksum);
-                    /* 打印原始帧数据帮助调试 */
-                    DEBUG_INFO("[Comm_RX] 帧数据: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
-                              g_comm_rx.buffer[0], g_comm_rx.buffer[1], g_comm_rx.buffer[2],
-                              g_comm_rx.buffer[3], g_comm_rx.buffer[4], g_comm_rx.buffer[5],
-                              g_comm_rx.buffer[6], g_comm_rx.buffer[7], g_comm_rx.buffer[8],
-                              g_comm_rx.buffer[9], g_comm_rx.buffer[10], g_comm_rx.buffer[11]);
                     g_comm_rx.index = 0;
                 }
             }
         }
     }
 
-    /* 重新启动接收中断 */
+    /* 重新启动接收中断 - 放在最后，确保执行 */
     HAL_UART_Receive_IT(&huart2, &g_comm_rx.byte, 1);
 }
 
