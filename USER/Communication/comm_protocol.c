@@ -63,7 +63,14 @@ void Comm_Update(void) {
     if (g_comm_rx.complete == 1) {
         uint8_t func_code = g_comm_rx.buffer[1];  /* 功能码 */
 
+        /* 打印完整帧数据（十六进制）用于调试 */
         DEBUG_INFO("[Comm] 收到帧: FC=0x%02X, Len=%d", func_code, g_comm_rx.index);
+        DEBUG_INFO("[Comm] 帧数据: ");
+        for (uint8_t i = 0; i < g_comm_rx.index && i < 16; i++) {
+            printf("%02X ", g_comm_rx.buffer[i]);
+            if ((i + 1) % 8 == 0) printf("\r\n          ");
+        }
+        printf("\r\n");
 
         switch (func_code) {
             case FUNC_SERVO_CONTROL:  /* 舵机控制 0x08 */

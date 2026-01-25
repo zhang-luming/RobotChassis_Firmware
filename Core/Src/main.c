@@ -162,8 +162,9 @@ int main(void) {
 
     DEBUG_INFO("ROS底板开始运行\r\n");
 
-    /* 启用IMU中断处理（在主循环开始后才启用，避免阻塞初始化） */
-    IMU_SetEnabled(1);
+    /* 临时禁用IMU中断，避免干扰串口通信调试 */
+    DEBUG_INFO("[DEBUG] IMU中断已禁用（用于串口通信调试）\r\n");
+    IMU_SetEnabled(0);
 
     /* USER CODE END 2 */
 
