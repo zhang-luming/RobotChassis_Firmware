@@ -52,32 +52,137 @@ void Comm_Init(void) {
 }
 
 /**
+ * @brief 从缓冲区提取一帧数据
+ * @param frame 输出帧缓冲区
+ * @param max_len 帧缓冲区最大长度
+ * @return 帧长度，0表示未找到完整帧
+ */
+static uint16_t ExtractFrame(uint8_t *frame, uint16_t max_len) {
+    uint16_t frame_len = 0;
+
+    /* 在缓冲区中查找帧头FC */
+    while (g_rx_read_idx != g_rx_write_idx) {
+        /* 读取当前字节 */
+        uint8_t byte = g_rx_buffer[g_rx_read_idx];
+
+        /* 查找帧头 */
+        if (byte == PROTOCOL_HEADER) {
+            /* 找到帧头，检查是否有足够的数据（最小帧：FC + Func + Checksum + DF = 4字节） */
+            uint16_t available = (g_rx_write_idx >= g_rx_read_idx) ?
+                                (g_rx_write_idx - g_rx_read_idx) :
+                                (RX_BUFFER_SIZE - g_rx_read_idx + g_rx_write_idx);
+
+            if (available < 4) {
+                /* 数据不足，等待更多数据 */
+                return 0;
+            }
+
+            /* 读取帧头和功能码 */
+            frame[0] = byte;
+            frame[1] = g_rx_buffer[(g_rx_read_idx + 1) % RX_BUFFER_SIZE];
+
+            /* 查找帧尾DF（从索引2开始搜索） */
+            uint16_t search_start = 2;
+            uint16_t tail_pos = 0;
+
+            for (uint16_t i = search_start; i < available && i < max_len; i++) {
+                uint8_t b = g_rx_buffer[(g_rx_read_idx + i) % RX_BUFFER_SIZE];
+                frame[i] = b;
+
+                if (b == PROTOCOL_TAIL) {
+                    /* 找到帧尾 */
+                    tail_pos = i;
+                    break;
+                }
+            }
+
+            if (tail_pos > 0) {
+                /* 找到完整帧 */
+                frame_len = tail_pos + 1;
+
+                /* 校验和验证（不包括帧尾） */
+                uint8_t checksum_len = frame_len - 2;  // 减去校验位和帧尾
+                uint8_t calc_checksum = Comm_XORCheck(frame, checksum_len);
+                uint8_t recv_checksum = frame[checksum_len];
+
+                if (calc_checksum == recv_checksum) {
+                    /* 校验通过，移动读指针 */
+                    g_rx_read_idx = (g_rx_read_idx + frame_len) % RX_BUFFER_SIZE;
+                    return frame_len;
+                } else {
+                    /* 校验失败，跳过这个帧头，继续搜索 */
+                    printf("[Frame] 校验失败: Calc=0x%02X, Recv=0x%02X\r\n",
+                           calc_checksum, recv_checksum);
+                    g_rx_read_idx = (g_rx_read_idx + 1) % RX_BUFFER_SIZE;
+                    return 0;
+                }
+            } else {
+                /* 未找到帧尾，数据不完整，等待更多数据 */
+                return 0;
+            }
+        } else {
+            /* 不是帧头，跳过这个字节 */
+            g_rx_read_idx = (g_rx_read_idx + 1) % RX_BUFFER_SIZE;
+        }
+    }
+
+    return 0;
+}
+
+/**
+ * @brief 处理协议帧
+ * @param frame 帧数据
+ * @param frame_len 帧长度
+ */
+static void ProcessFrame(uint8_t *frame, uint16_t frame_len) {
+    uint8_t func_code = frame[1];
+
+    printf("[Frame] FC=0x%02X, Len=%d\r\n", func_code, frame_len);
+
+    /* 根据功能码分发 */
+    switch (func_code) {
+        case FUNC_MOTOR_SPEED:  /* 0x06 电机目标速度 */
+            printf("[Motor] 速度控制 - 待实现\r\n");
+            // TODO: 实现电机速度控制
+            break;
+
+        case FUNC_PID_PARAM:  /* 0x07 PID参数 */
+            printf("[PID] 参数设置 - 待实现\r\n");
+            // TODO: 实现PID参数设置
+            break;
+
+        case FUNC_SERVO_CONTROL:  /* 0x08 舵机控制 */
+            printf("[Servo] 舵机控制 - 待实现\r\n");
+            // TODO: 实现舵机控制
+            break;
+
+        default:
+            printf("[Frame] 未知功能码: 0x%02X\r\n", func_code);
+            break;
+    }
+}
+
+/**
  * @brief 更新通信模块（每10ms调用）
  *
  * 功能：
- * - 读取并打印接收缓冲区中的新数据
+ * - 从缓冲区解析协议帧
+ * - 分发到各处理函数
  */
 void Comm_Update(void) {
-    /* 检查是否有新数据 */
-    if (g_rx_write_idx != g_rx_read_idx) {
+    static uint8_t frame_buffer[128];  // 帧缓冲区
 
-        uint16_t new_bytes = (g_rx_write_idx >= g_rx_read_idx) ?
-                             (g_rx_write_idx - g_rx_read_idx) :
-                             (RX_BUFFER_SIZE - g_rx_read_idx + g_rx_write_idx);
+    /* 持续从缓冲区提取帧，直到没有完整帧 */
+    while (1) {
+        uint16_t frame_len = ExtractFrame(frame_buffer, sizeof(frame_buffer));
 
-        if (new_bytes > 0) {
-            printf("[Comm_Update] 接收到 %u 字节: ", new_bytes);
-
-            /* 打印新接收的字节 */
-            for (uint16_t i = 0; i < new_bytes; i++) {
-                uint16_t idx = (g_rx_read_idx + i) % RX_BUFFER_SIZE;
-                printf("%02X ", g_rx_buffer[idx]);
-            }
-            printf("\r\n");
-
-            /* 更新读指针 */
-            g_rx_read_idx = (g_rx_read_idx + new_bytes) % RX_BUFFER_SIZE;
+        if (frame_len == 0) {
+            /* 没有完整帧，退出 */
+            break;
         }
+
+        /* 处理帧 */
+        ProcessFrame(frame_buffer, frame_len);
     }
 }
 
