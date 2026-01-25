@@ -49,6 +49,9 @@ volatile uint8_t g_debug_checksum_recv = 0;  /* 接收到的校验和 */
 volatile uint8_t g_debug_checksum_valid = 0; /* 校验是否通过 */
 volatile uint8_t g_debug_frame_index = 0;    /* 帧接收完成时的index值 */
 volatile uint8_t g_debug_frame_complete = 0; /* 帧接收完成时的complete值 */
+volatile uint8_t g_debug_checksum_idx = 0;   /* 校验和索引位置 */
+volatile uint8_t g_debug_buffer[16] = {0};   /* 接收缓冲区副本 */
+volatile uint8_t g_debug_buffer_len = 0;     /* 缓冲区长度 */
 
 /* ==================== 公共接口实现 ==================== */
 
@@ -90,6 +93,13 @@ void Comm_Update(void) {
     /* ========== 调试：打印校验和信息 ========== */
     static uint8_t last_checksum_valid = 0xFF;
     if (g_debug_checksum_valid != 0xFF && g_debug_checksum_valid != last_checksum_valid) {
+        printf("[CHKSUM] 索引=%d, 计算长度=%d\r\n", g_debug_checksum_idx, g_debug_checksum_idx);
+        printf("[Buffer] ");
+        for (uint8_t i = 0; i < g_debug_buffer_len && i < 16; i++) {
+            printf("%02X ", g_debug_buffer[i]);
+        }
+        printf("\r\n");
+
         if (g_debug_checksum_valid) {
             printf("[CHKSUM] ✓ 校验通过: Calc=0x%02X, Recv=0x%02X\r\n",
                    g_debug_checksum_calc, g_debug_checksum_recv);
@@ -212,6 +222,15 @@ void Comm_RxCallback(UART_HandleTypeDef *huart) {
                  * 校验和是前10个字节(0~9)的XOR，位于索引10
                  */
                 uint8_t checksum_index = g_comm_rx.index - 2;  // 校验和位置：12 - 2 = 10
+
+                /* 保存buffer内容到全局变量供调试 */
+                for (uint8_t i = 0; i < g_comm_rx.index && i < 16; i++) {
+                    g_debug_buffer[i] = g_comm_rx.buffer[i];
+                }
+                g_debug_buffer_len = g_comm_rx.index;
+
+                g_debug_checksum_idx = checksum_index;
+
                 uint8_t calculated_checksum = Comm_XORCheck(g_comm_rx.buffer, checksum_index);
                 uint8_t received_checksum = g_comm_rx.buffer[checksum_index];
 
