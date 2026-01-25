@@ -43,6 +43,11 @@ static uint8_t g_debug_rx_buf[DEBUG_RX_BUF_SIZE];
 static uint8_t g_debug_rx_len = 0;
 static volatile uint8_t g_debug_rx_ready = 0;
 
+/* 校验和调试信息 */
+volatile uint8_t g_debug_checksum_calc = 0;  /* 计算得到的校验和 */
+volatile uint8_t g_debug_checksum_recv = 0;  /* 接收到的校验和 */
+volatile uint8_t g_debug_checksum_valid = 0; /* 校验是否通过 */
+
 /* ==================== 公共接口实现 ==================== */
 
 /**
@@ -77,6 +82,20 @@ void Comm_Update(void) {
         g_debug_rx_len = 0;
     }
 
+    /* ========== 调试：打印校验和信息 ========== */
+    static uint8_t last_checksum_valid = 0xFF;
+    if (g_debug_checksum_valid != 0xFF && g_debug_checksum_valid != last_checksum_valid) {
+        if (g_debug_checksum_valid) {
+            printf("[CHKSUM] ✓ 校验通过: Calc=0x%02X, Recv=0x%02X\r\n",
+                   g_debug_checksum_calc, g_debug_checksum_recv);
+        } else {
+            printf("[CHKSUM] ✗ 校验失败: Calc=0x%02X, Recv=0x%02X\r\n",
+                   g_debug_checksum_calc, g_debug_checksum_recv);
+        }
+        last_checksum_valid = g_debug_checksum_valid;
+        g_debug_checksum_valid = 0xFF;  /* 重置 */
+    }
+
     if (g_comm_rx.complete == 1) {
         uint8_t func_code = g_comm_rx.buffer[1];  /* 功能码 */
 
@@ -97,6 +116,7 @@ void Comm_Update(void) {
                 /* 调用舵机模块的Process函数 */
                 Servo_ProcessSetAngle(0, g_comm_rx.buffer[2]);  /* 舵机1 */
                 Servo_ProcessSetAngle(1, g_comm_rx.buffer[3]);  /* 舵机2 */
+                printf("[Comm] ✓ 舵机控制指令已发送\r\n");
                 break;
             }
 
@@ -115,6 +135,8 @@ void Comm_Update(void) {
                 Motor_ProcessSetSpeed(1, speed[1]);
                 Motor_ProcessSetSpeed(2, speed[2]);
                 Motor_ProcessSetSpeed(3, speed[3]);
+                printf("[Comm] ✓ 电机速度指令已发送: A=%d B=%d C=%d D=%d\r\n",
+                       speed[0], speed[1], speed[2], speed[3]);
                 break;
             }
 
@@ -130,6 +152,7 @@ void Comm_Update(void) {
                 for (uint8_t i = 0; i < 4; i++) {
                     Motor_ProcessSetPID(i, kp, ki, kd);
                 }
+                printf("[Comm] ✓ PID参数已设置: Kp=%d Ki=%d Kd=%d\r\n", kp, ki, kd);
                 break;
             }
 
@@ -184,6 +207,11 @@ void Comm_RxCallback(UART_HandleTypeDef *huart) {
                 uint8_t calculated_checksum = Comm_XORCheck(g_comm_rx.buffer, checksum_len);
                 uint8_t received_checksum = g_comm_rx.buffer[checksum_len];
 
+                /* 校验和调试信息（保存到全局变量，在主循环中打印） */
+                g_debug_checksum_calc = calculated_checksum;
+                g_debug_checksum_recv = received_checksum;
+                g_debug_checksum_valid = (calculated_checksum == received_checksum) ? 1 : 0;
+
                 if (calculated_checksum == received_checksum) {
                     g_comm_rx.complete = 1;
                     /* 注意：不在这里重置index和增加frame_count，由Comm_Update()统一处理 */
@@ -216,14 +244,14 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART2) {
         g_rx_byte_count++;  /* 字节计数 */
 
-        /* 将接收到的字节保存到调试缓冲区 */
+        /* 将接收到的字节保存到调试缓冲区（用于调试） */
         if (g_debug_rx_len < DEBUG_RX_BUF_SIZE) {
             g_debug_rx_buf[g_debug_rx_len++] = g_comm_rx.byte;
         }
-        g_debug_rx_ready = 1;  /* 标记有新数据 */
+        g_debug_rx_ready = 1;  /* 标记有新数据，将在主循环中打印 */
 
-        /* 暂时注释掉正常处理流程，只测试接收功能 */
-        // Comm_RxCallback(huart);
+        /* ========== 正常处理流程 ========== */
+        Comm_RxCallback(huart);
     }
     /* USART1 不处理接收数据 */
 
