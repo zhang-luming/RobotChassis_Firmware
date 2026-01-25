@@ -196,9 +196,17 @@ void Comm_RxCallback(UART_HandleTypeDef *huart) {
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     /* 仅处理 USART2 的接收中断 */
     if (huart->Instance == USART2) {
-        Comm_RxCallback(huart);
+        /* ========== 调试：直接打印接收到的字节 ========== */
+        printf("[UART2_IRQ] RX: 0x%02X ('%c')\r\n", g_comm_rx.byte,
+               (g_comm_rx.byte >= 32 && g_comm_rx.byte <= 126) ? g_comm_rx.byte : '.');
+
+        /* 暂时注释掉正常处理流程，只测试接收功能 */
+        // Comm_RxCallback(huart);
     }
     /* USART1 不处理接收数据 */
+
+    /* 重新启动接收中断 */
+    HAL_UART_Receive_IT(&huart2, &g_comm_rx.byte, 1);
 }
 
 /* ==================== 发送函数实现 ==================== */
