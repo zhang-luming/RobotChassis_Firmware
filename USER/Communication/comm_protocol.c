@@ -114,7 +114,9 @@ void Comm_Update(void) {
                 break;
         }
 
+        /* 处理完成后重置接收状态 */
         g_comm_rx.complete = 0;
+        g_comm_rx.index = 0;
         g_rx_frame_count++;
     }
 }
@@ -160,7 +162,7 @@ void Comm_RxCallback(UART_HandleTypeDef *huart) {
 
                 if (calculated_checksum == received_checksum) {
                     g_comm_rx.complete = 1;
-                    g_rx_frame_count++;
+                    /* 注意：不在这里重置index和增加frame_count，由Comm_Update()统一处理 */
                 } else {
                     /* 校验错误，丢弃帧 */
                     g_rx_checksum_error++;
