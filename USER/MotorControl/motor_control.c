@@ -223,27 +223,6 @@ void Motor_UpdateControl(void) {
 }
 
 /**
- * @brief 处理电机速度控制指令
- * @param motor_id 电机ID (0-3)
- * @param speed 目标速度（单位：centi-CPS - CPS/100，编码器计数/秒÷100）
- *
- * 功能：
- * - 将centi-CPS转换为编码器增量并存储
- * - 转换公式使用动态计算的周期：
- *   encoder_delta = (speed × 100) × g_update_period_ms / 1000
- *   = speed × g_update_period_ms / 10
- *
- * 100 缩放的意义：协议帧中每个电机只有两字节，不进行放大数值对于编码器计数的量级来说太小
- */
-void Motor_ProcessSetSpeed(uint8_t motor_id, int16_t speed) {
-  if (motor_id < MOTOR_COUNT) {
-    /* centi-CPS转换为编码器增量（使用动态周期） */
-    /* speed单位是CPS/100，需要乘以100转换为CPS，再转换为增量 */
-    g_target_speeds[motor_id] = (int16_t)(speed * g_update_period_ms / 10.0f);
-  }
-}
-
-/**
  * @brief 处理电机速度控制帧（从通信协议调用）
  * @param frame 帧数据指针
  * @param frame_len 帧长度
@@ -260,13 +239,16 @@ void Motor_ProcessSpeedFrame(uint8_t *frame, uint16_t frame_len) {
   /* 帧数据从索引2开始，格式：4个int16_t（大端序） */
   uint8_t *data = &frame[2];
 
-  /* 解析4个电机的速度 */
+  /* 解析并设置4个电机的速度 */
   for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
     /* 大端序解析int16_t */
     int16_t speed = (int16_t)((data[i * 2] << 8) | data[i * 2 + 1]);
 
-    /* 应用速度设置（包含单位转换） */
-    Motor_ProcessSetSpeed(i, speed);
+    /* centi-CPS转换为编码器增量（直接转换，无需额外函数调用） */
+    if (i < MOTOR_COUNT) {
+      /* speed单位是CPS/100，转换为编码器增量 */
+      g_target_speeds[i] = (int16_t)(speed * g_update_period_ms / 10.0f);
+    }
   }
 
   /* 调试输出 */
@@ -301,6 +283,36 @@ void Motor_ProcessSetPID(uint8_t motor_id, int16_t kp, int16_t ki, int16_t kd) {
       PID_D = kd;
     }
   }
+}
+
+/**
+ * @brief 处理PID参数设置帧（从通信协议调用）
+ * @param frame 帧数据指针
+ * @param frame_len 帧长度
+ *
+ * 帧格式：[FC][0x07][Kp高][Kp低][Ki高][Ki低][Kd高][Kd低][Checksum][DF]
+ * 索引：  0    1     2    3     4    5     6    7      8        9
+ *
+ * 功能：
+ * - 从帧中解析PID参数（3个int16_t，大端序）
+ * - 为所有4个电机设置相同的PID参数
+ */
+void Motor_ProcessPIDFrame(uint8_t *frame, uint16_t frame_len) {
+  /* 帧数据从索引2开始，格式：3个int16_t（大端序） */
+  uint8_t *data = &frame[2];
+
+  /* 解析PID参数 */
+  int16_t kp = (int16_t)((data[0] << 8) | data[1]);
+  int16_t ki = (int16_t)((data[2] << 8) | data[3]);
+  int16_t kd = (int16_t)((data[4] << 8) | data[5]);
+
+  /* 为所有4个电机设置相同的PID参数 */
+  for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
+    Motor_ProcessSetPID(i, kp, ki, kd);
+  }
+
+  /* 调试输出 */
+  printf("[PID] 参数设置: Kp=%d, Ki=%d, Kd=%d (所有电机)\r\n", kp, ki, kd);
 }
 
 /* ==================== 私有函数实现 ==================== */

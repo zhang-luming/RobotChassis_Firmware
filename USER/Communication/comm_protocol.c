@@ -150,8 +150,7 @@ static void ProcessFrame(uint8_t* frame, uint16_t frame_len) {
       break;
 
     case FUNC_PID_PARAM: /* 0x07 PID参数 */
-      printf("[PID] 参数设置 - 待实现\r\n");
-      // TODO: 实现PID参数设置
+      Motor_ProcessPIDFrame(frame, frame_len);
       break;
 
     case FUNC_SERVO_CONTROL: /* 0x08 舵机控制 */

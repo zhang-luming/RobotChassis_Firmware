@@ -51,44 +51,31 @@ void Motor_UpdateControl(void);
 /* ==================== 控制指令处理 ==================== */
 
 /**
- * @brief 处理电机速度控制指令
- * @param motor_id 电机ID (0-3)
- * @param speed 目标速度（单位：centi-CPS - CPS/100）
- *
- * 功能：
- * - 设置电机目标速度
- * - 保存到内部状态
- *
- * 注意：
- * - 使用centi-CPS（CPS/100）单位以支持更大的速度范围（int16_t范围±32767）
- * - 实际CPS = 协议值 × 100
- * - 与编码器硬件配置（PPR、减速比）无关
- * - 上位机需要根据实际硬件配置转换：
- *   协议值 = RPM × (PPR × 4 × 减速比) / 60 / 100
- *   或：RPM = 协议值 × 100 / (PPR × 4 × 减速比) × 60
- *
- * 示例（PPR=500，4倍频=2000，减速比=30:1）：
- * - 目标10 RPM → 协议值 = 10 × 2000 × 30 / 60 / 100 = 100
- * - 目标50 RPM → 协议值 = 50 × 2000 × 30 / 60 / 100 = 500
- * - 目标100 RPM → 协议值 = 100 × 2000 × 30 / 60 / 100 = 1000
- *
- * 数据范围：
- * - 协议值范围：-32768 到 32767（int16_t）
- * - 对应CPS范围：-3276800 到 3276700 CPS
- * - 足够覆盖大多数应用场景
- */
-void Motor_ProcessSetSpeed(uint8_t motor_id, int16_t speed);
-
-/**
  * @brief 处理电机速度控制帧（从通信协议调用）
  * @param frame 帧数据指针
  * @param frame_len 帧长度
  *
+ * 帧格式：[FC][0x06][速度A高][速度A低][速度B高][速度B低][速度C高][速度C低][速度D高][速度D低][Checksum][DF]
+ *
  * 功能：
  * - 从通信帧中解析4个电机的速度
- * - 调用Motor_ProcessSetSpeed设置每个电机速度
+ * - 单位：centi-CPS（CPS/100）
+ * - 转换为编码器增量并存储
  */
 void Motor_ProcessSpeedFrame(uint8_t *frame, uint16_t frame_len);
+
+/**
+ * @brief 处理PID参数设置帧（从通信协议调用）
+ * @param frame 帧数据指针
+ * @param frame_len 帧长度
+ *
+ * 帧格式：[FC][0x07][Kp高][Kp低][Ki高][Ki低][Kd高][Kd低][Checksum][DF]
+ *
+ * 功能：
+ * - 从通信帧中解析PID参数
+ * - 为所有4个电机设置相同的PID参数
+ */
+void Motor_ProcessPIDFrame(uint8_t *frame, uint16_t frame_len);
 
 /**
  * @brief 处理PID参数设置指令
@@ -96,8 +83,6 @@ void Motor_ProcessSpeedFrame(uint8_t *frame, uint16_t frame_len);
  * @param kp P参数（放大100倍）
  * @param ki I参数（放大100倍）
  * @param kd D参数（放大100倍）
- *
- * 注意：由Comm模块在接收到PID配置指令时调用
  */
 void Motor_ProcessSetPID(uint8_t motor_id, int16_t kp, int16_t ki, int16_t kd);
 
