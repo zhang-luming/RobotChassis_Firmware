@@ -47,6 +47,8 @@ static volatile uint8_t g_debug_rx_ready = 0;
 volatile uint8_t g_debug_checksum_calc = 0;  /* 计算得到的校验和 */
 volatile uint8_t g_debug_checksum_recv = 0;  /* 接收到的校验和 */
 volatile uint8_t g_debug_checksum_valid = 0; /* 校验是否通过 */
+volatile uint8_t g_debug_frame_index = 0;    /* 帧接收完成时的index值 */
+volatile uint8_t g_debug_frame_complete = 0; /* 帧接收完成时的complete值 */
 
 /* ==================== 公共接口实现 ==================== */
 
@@ -78,7 +80,9 @@ void Comm_Update(void) {
             printf("%02X ", g_debug_rx_buf[i]);
         }
         printf("\r\n");
-        printf("[State] index=%d complete=%d\r\n", g_comm_rx.index, g_comm_rx.complete);
+        printf("[State] 此时index=%d complete=%d, 接收完成时index=%d complete=%d\r\n",
+               g_comm_rx.index, g_comm_rx.complete,
+               g_debug_frame_index, g_debug_frame_complete);
         g_debug_rx_ready = 0;
         g_debug_rx_len = 0;
     }
@@ -212,9 +216,12 @@ void Comm_RxCallback(UART_HandleTypeDef *huart) {
                 g_debug_checksum_calc = calculated_checksum;
                 g_debug_checksum_recv = received_checksum;
                 g_debug_checksum_valid = (calculated_checksum == received_checksum) ? 1 : 0;
+                g_debug_frame_index = g_comm_rx.index;  /* 保存当前index */
+                g_debug_frame_complete = 0;  /* 先设为0，如果校验通过会设为1 */
 
                 if (calculated_checksum == received_checksum) {
                     g_comm_rx.complete = 1;
+                    g_debug_frame_complete = 1;  /* 标记校验通过 */
                     /* 注意：不在这里重置index和增加frame_count，由Comm_Update()统一处理 */
                 } else {
                     /* 校验错误，丢弃帧 */
