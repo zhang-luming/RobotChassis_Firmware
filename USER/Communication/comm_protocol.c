@@ -172,7 +172,7 @@ static void ProcessFrame(uint8_t* frame, uint16_t frame_len) {
  * - 分发到各处理函数
  */
 void Comm_Update(void) {
-  static uint8_t frame_buffer[128];  // 帧缓冲区
+  static uint8_t frame_buffer[64];  // 帧缓冲区
 
   /* 持续从缓冲区提取帧，直到没有完整帧 */
   while (1) {

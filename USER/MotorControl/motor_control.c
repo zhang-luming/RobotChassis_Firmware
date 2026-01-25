@@ -250,13 +250,6 @@ void Motor_ProcessSpeedFrame(uint8_t *frame, uint16_t frame_len) {
       g_target_speeds[i] = (int16_t)(speed * g_update_period_ms / 10.0f);
     }
   }
-
-  /* 调试输出 */
-  printf("[Motor] 速度设置: A=%d, B=%d, C=%d, D=%d (centi-CPS)\r\n",
-         (int16_t)((data[0] << 8) | data[1]),
-         (int16_t)((data[2] << 8) | data[3]),
-         (int16_t)((data[4] << 8) | data[5]),
-         (int16_t)((data[6] << 8) | data[7]));
 }
 
 /**
@@ -310,9 +303,6 @@ void Motor_ProcessPIDFrame(uint8_t *frame, uint16_t frame_len) {
   for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
     Motor_ProcessSetPID(i, kp, ki, kd);
   }
-
-  /* 调试输出 */
-  printf("[PID] 参数设置: Kp=%d, Ki=%d, Kd=%d (所有电机)\r\n", kp, ki, kd);
 }
 
 /* ==================== 私有函数实现 ==================== */

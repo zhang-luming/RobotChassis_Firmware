@@ -162,9 +162,7 @@ int main(void) {
 
     DEBUG_INFO("ROS底板开始运行\r\n");
 
-    /* 临时禁用IMU中断，避免干扰串口通信调试 */
-    DEBUG_INFO("[DEBUG] IMU中断已禁用（用于串口通信调试）\r\n");
-    IMU_SetEnabled(0);
+    IMU_SetEnabled(1);
 
     /* USER CODE END 2 */
 
@@ -180,17 +178,9 @@ int main(void) {
 
             /* ========== 系统更新 ========== */
             Comm_Update();          /* 处理接收数据并分发指令 */
-
-            /* 每50ms执行 */
-            if (Run_Times % 5 == 0) {
-                Motor_UpdateControl();  // 电机控制
-                Servo_Update(); // 舵机控制（预定义接口）
-            }
-
-            /* 每100ms执行 - LED状态更新 */
-            if (Run_Times % 10 == 0) {
-                LED_Update();
-            }
+            Motor_UpdateControl();  // 电机控制
+            LED_Update();   // LED控制
+            Servo_Update();  // 舵机控制（预定义接口）
 
             /* 每200ms执行 */
             if (Run_Times % 20 == 0) {
