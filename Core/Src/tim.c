@@ -328,10 +328,11 @@ void MX_TIM7_Init(void)
 
   /* USER CODE BEGIN TIM7_Init 1 */
   /* 微秒时间戳配置:
-   * - 时钟源: 72MHz (APB1)
-   * - 预分频: 72 (72MHz / 72 = 1MHz = 1us/tick)
+   * - APB1时钟: 36MHz (72MHz SYSCLK / 2)
+   * - TIM7时钟: 72MHz (APB1分频系数>1时自动×2)
+   * - 预分频: 71 (72MHz / 72 = 1MHz = 1us/tick)
    * - 周期: 65535 (16位最大值, 65536us溢出 ≈ 65.5ms)
-   * - 中断: 使能溢出中断，用于维护时间戳高16位
+   * - 中断: 使能溢出中断，用于维护时间戳高48位
    */
   /* USER CODE END TIM7_Init 1 */
   htim7.Instance = TIM7;

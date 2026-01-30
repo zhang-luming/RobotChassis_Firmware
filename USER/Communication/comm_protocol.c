@@ -12,9 +12,11 @@
 #include "comm_protocol.h"
 
 #include "System/debug.h"
+#include "TimeSync/ptp_sync.h"
 #include "motor_control.h"
 #include "servo_control.h"
 #include "stdio.h"
+#include "inttypes.h"
 #include "string.h"
 #include "tim.h"
 #include "usart.h"
@@ -36,6 +38,18 @@ uint8_t UART_SEND_BUF[128];
 
 /* 调试：上一次打印的字节数 */
 static uint16_t g_last_printed_bytes = 0;
+
+/* PTP帧解析状态（用于中断中快速检测） */
+typedef enum {
+    PTP_STATE_IDLE = 0,         /* 空闲状态 */
+    PTP_STATE_GOT_HEADER,       /* 收到帧头0xFC */
+    PTP_STATE_GOT_FUNC,         /* 收到功能码 */
+    PTP_STATE_GOT_MSG_TYPE,     /* 收到消息类型 */
+    PTP_STATE_GOT_SEQ,          /* 收到序列号 */
+} PtpParseState_t;
+
+static PtpParseState_t g_ptp_parse_state = PTP_STATE_IDLE;
+static uint8_t g_ptp_seq_num = 0;
 
 /* ==================== 公共接口实现 ==================== */
 
@@ -158,6 +172,17 @@ static void ProcessFrame(uint8_t* frame, uint16_t frame_len) {
       // TODO: 实现舵机控制
       break;
 
+    case FUNC_PTP_SYNC: /* 0x10 PTP时间同步 */
+      /* 检查是否为同步请求（已被快速响应处理） */
+      if (frame_len >= 3 && frame[2] == PTP_SYNC_REQUEST) {
+        /* 同步请求已在快速响应中处理，跳过 */
+        DEBUG_VERBOSE("[Frame] PTP sync request already handled in fast path\r\n");
+      } else {
+        /* 其他PTP消息类型（如设置offset等）正常处理 */
+        PTP_ProcessFrame(frame, frame_len);
+      }
+      break;
+
     default:
       printf("[Frame] 未知功能码: 0x%02X\r\n", func_code);
       break;
@@ -190,7 +215,7 @@ void Comm_Update(void) {
 
 /**
  * @brief 串口接收中断回调
- * @note 在中断中调用，只负责接收数据到缓冲区
+ * @note 在中断中调用，接收数据并快速检测PTP帧
  */
 void Comm_RxCallback(UART_HandleTypeDef* huart) {
   if (huart->Instance == USART2) {
@@ -203,6 +228,74 @@ void Comm_RxCallback(UART_HandleTypeDef* huart) {
       g_rx_write_idx = next_idx;
     }
     /* 缓冲区满时丢弃新字节 */
+
+    /* PTP快速检测：在中断中识别PTP同步请求 */
+    switch (g_ptp_parse_state) {
+      case PTP_STATE_IDLE:
+        if (g_rx_byte == PROTOCOL_HEADER) {
+          g_ptp_parse_state = PTP_STATE_GOT_HEADER;
+        }
+        break;
+
+      case PTP_STATE_GOT_HEADER:
+        if (g_rx_byte == FUNC_PTP_SYNC) {
+          g_ptp_parse_state = PTP_STATE_GOT_FUNC;
+        } else {
+          g_ptp_parse_state = PTP_STATE_IDLE;
+        }
+        break;
+
+      case PTP_STATE_GOT_FUNC:
+        if (g_rx_byte == PTP_SYNC_REQUEST) {
+          g_ptp_parse_state = PTP_STATE_GOT_MSG_TYPE;
+        } else {
+          g_ptp_parse_state = PTP_STATE_IDLE;
+        }
+        break;
+
+      case PTP_STATE_GOT_MSG_TYPE:
+        /* 收到序列号，记录并等待帧尾 */
+        g_ptp_seq_num = g_rx_byte;
+        g_ptp_parse_state = PTP_STATE_GOT_SEQ;
+        break;
+
+      case PTP_STATE_GOT_SEQ:
+        /* 等待帧尾0xDF */
+        if (g_rx_byte == PROTOCOL_TAIL) {
+          /* 完整的PTP同步请求帧，在中断中立即处理 */
+          extern uint64_t Time_GetUs(void);
+
+          /* 记录t2时间戳 */
+          uint64_t t2 = Time_GetUs();
+
+          /* 构建PTP响应帧（只包含t2，t3由Comm_SendDataFrame自动添加到帧末尾） */
+          int16_t data[5];
+          data[0] = (int16_t)((g_ptp_seq_num << 8) | 0x02);  /* 响应类型 */
+
+          /* 将t2拆分为4个int16_t */
+          data[1] = (int16_t)(t2 & 0xFFFF);
+          data[2] = (int16_t)((t2 >> 16) & 0xFFFF);
+          data[3] = (int16_t)((t2 >> 32) & 0xFFFF);
+          data[4] = (int16_t)((t2 >> 48) & 0xFFFF);
+
+          /* Comm_SendDataFrame会自动添加发送时间戳（tx_timestamp = t3）到帧末尾 */
+          Comm_SendDataFrame(FUNC_PTP_SYNC, data, 5);
+
+          g_ptp_parse_state = PTP_STATE_IDLE;
+
+          DEBUG_VERBOSE("[PTP] IRQ resp: seq=%d, t2=%lu\r\n",
+                        g_ptp_seq_num, (unsigned long)t2);
+        } else if (g_rx_byte == PROTOCOL_HEADER) {
+          /* 异常情况：新的帧开始，重置状态 */
+          g_ptp_parse_state = PTP_STATE_GOT_HEADER;
+        }
+        /* 其他字节继续等待帧尾 */
+        break;
+
+      default:
+        g_ptp_parse_state = PTP_STATE_IDLE;
+        break;
+    }
   }
 }
 
@@ -248,27 +341,39 @@ void Comm_SendBuf(USART_TypeDef* USART_COM, uint8_t* buf, uint16_t len) {
 
 /**
  * @brief 公共接口：发送协议数据帧
+ * @param func_code 功能码
+ * @param data 数据指针（int16_t数组）
+ * @param data_len 数据长度（int16_t个数）
+ *
+ * 帧格式：[FC][Func][Data...][TxTimestamp(8 bytes)][Checksum][DF]
+ * - 所有数据统一使用小端序（Little-Endian）
+ * - TxTimestamp: 本帧开始发送的时间戳（64位微秒）
  */
 void Comm_SendDataFrame(uint8_t func_code, int16_t* data, uint8_t data_len) {
-  /* 计算帧总长度 */
-  uint8_t frame_len = 2 + data_len + 2;
+  extern uint64_t Time_GetUs(void);
 
   /* 构建协议帧 */
   UART_SEND_BUF[0] = PROTOCOL_HEADER;
   UART_SEND_BUF[1] = func_code;
 
-  /* 复制数据（int16_t转uint8_t，大端序） */
+  /* 复制数据（int16_t转uint8_t，小端序） */
   uint8_t data_idx = 2;
-  for (uint8_t i = 0; i < data_len; i += 2) {
-    int16_t value = data[i / 2];
-    UART_SEND_BUF[data_idx++] = (value >> 8) & 0xFF;
-    UART_SEND_BUF[data_idx++] = value & 0xFF;
+  for (uint8_t i = 0; i < data_len; i++) {
+    int16_t value = data[i];
+    UART_SEND_BUF[data_idx++] = value & 0xFF;          /* 低字节在前 */
+    UART_SEND_BUF[data_idx++] = (value >> 8) & 0xFF;  /* 高字节在后 */
   }
 
-  /* 计算校验和 */
+  /* 添加发送时间戳（8字节，64位微秒时间戳，小端序） */
+  uint64_t tx_timestamp = Time_GetUs();
+  for (int i = 0; i < 8; i++) {
+    UART_SEND_BUF[data_idx++] = (tx_timestamp >> (i * 8)) & 0xFF;
+  }
+
+  /* 计算校验和（包括时间戳） */
   UART_SEND_BUF[data_idx] = Comm_XORCheck(UART_SEND_BUF, data_idx);
   UART_SEND_BUF[data_idx + 1] = PROTOCOL_TAIL;
 
   /* 发送 */
-  Comm_SendBuf(USART2, UART_SEND_BUF, frame_len);
+  Comm_SendBuf(USART2, UART_SEND_BUF, data_idx + 2);
 }

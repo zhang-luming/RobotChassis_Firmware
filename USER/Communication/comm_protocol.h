@@ -36,8 +36,12 @@ extern "C" {
 #define FUNC_MOTOR_SPEED      0x06  /* 电机目标速度 */
 #define FUNC_PID_PARAM        0x07  /* PID参数设置 */
 #define FUNC_SERVO_CONTROL    0x08  /* 舵机控制 */
+#define FUNC_PTP_SYNC         0x10  /* PTP时间同步 */
 
 #define RX_BUFFER_SIZE        256   /* 接收缓冲区大小 */
+
+/* PTP帧定义 */
+#define PTP_SYNC_REQUEST      0x01  /* PTP同步请求 */
 
 /* ==================== 类型定义 ==================== */
 
@@ -93,19 +97,22 @@ void Comm_SendBuf(USART_TypeDef *USART_COM, uint8_t *buf, uint16_t len);
  * @brief 公共接口：发送协议数据帧
  * @param func_code 功能码
  * @param data 数据指针（int16_t数组）
- * @param data_len 数据长度（字节数，支持任意长度）
+ * @param data_len 数据长度（int16_t个数）
  *
  * 功能：
  * - 自动打包协议帧：[0xFC][FuncCode][Data...][Checksum][0xDF]
- * - 支持动态数据长度（不限制为10字节）
+ * - 支持动态数据长度
  * - 校验位计算包括帧头、功能码和数据段
  * - 各模块可调用此接口发送数据
  *
+ * 数据格式：int16_t按大端序转换为uint8_t字节流
+ * - int16_t值 0x1234 → 0x12 0x34（高字节在前）
+ *
  * 示例：
- * - Comm_SendDataFrame(FUNC_EULER_ANGLE, euler, 6);   // 3个int16_t
- * - Comm_SendDataFrame(FUNC_GYRO, gyro, 6);           // 3个int16_t
- * - Comm_SendDataFrame(FUNC_ENCODER, encoders, 8);    // 4个int16_t
- * - Comm_SendDataFrame(FUNC_BATTERY_VOLTAGE, &voltage, 2);  // 1个int16_t
+ * - Comm_SendDataFrame(FUNC_EULER_ANGLE, euler, 3);   // 3个int16_t
+ * - Comm_SendDataFrame(FUNC_GYRO, gyro, 3);           // 3个int16_t
+ * - Comm_SendDataFrame(FUNC_ENCODER, encoders, 4);    // 4个int16_t
+ * - Comm_SendDataFrame(FUNC_BATTERY_VOLTAGE, &voltage, 1);  // 1个int16_t
  */
 void Comm_SendDataFrame(uint8_t func_code, int16_t *data, uint8_t data_len);
 

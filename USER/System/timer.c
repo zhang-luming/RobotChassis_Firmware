@@ -1,154 +1,88 @@
 /**
  ******************************************************************************
  * @file    timer.c
- * @brief   统一定时器模块实现
- *
- * 功能说明：
- * - TIM6: 10ms系统时基管理
- * - TIM7: 微秒时间戳（32位，约1.2小时溢出周期）
- * - 微秒延时函数
+ * @brief   定时器模块实现
  ******************************************************************************
  */
 
 #include "timer.h"
 #include "tim.h"
 
-/* ==================== TIM6：10ms系统时基 ==================== */
+/* ==================== TIM6: 10ms系统时基 ==================== */
 
-/* TIM6中断标志 */
 static volatile uint8_t g_tim6_timeout = 0;
 
-/**
- * @brief TIM6定时器中断处理函数（由TIM6_IRQHandler调用）
- * @note 设置10ms时基标志，供主循环使用
- */
 void Timer_TIM6IRQHandler(void) {
-    g_tim6_timeout = 1;
+  g_tim6_timeout = 1;
 }
 
-/**
- * @brief 判断10ms定时时间是否到
- * @return 1-时间到, 0-时间未到
- */
 uint8_t Timer_IsTim6Timeout(void) {
-    if (g_tim6_timeout) {
-        g_tim6_timeout = 0;
-        return 1;
-    }
-    return 0;
+  if (g_tim6_timeout) {
+    g_tim6_timeout = 0;
+    return 1;
+  }
+  return 0;
 }
 
-/**
- * @brief TIM周期溢出回调（HAL库弱函数）
- * @param htim TIM句柄
- *
- * 处理的定时器：
- * - TIM6: 10ms系统时基
- * - TIM7: 微秒时间戳溢出
- */
 void HAL_TIM_PeriodElapsedCallback(const TIM_HandleTypeDef *htim) {
-    if (htim->Instance == TIM6) {
-        /* 10ms时基标志 */
-        Timer_TIM6IRQHandler();
-    }
-    else if (htim->Instance == TIM7) {
-        /* 微秒时间戳高16位递增 */
-        Time_TIM7IRQHandler();
-    }
+  if (htim->Instance == TIM6) {
+    Timer_TIM6IRQHandler();
+  } else if (htim->Instance == TIM7) {
+    Time_TIM7IRQHandler();
+  }
 }
 
-/* ==================== TIM7：微秒时间戳 ==================== */
+/* ==================== TIM7: 64位微秒时间戳 ==================== */
 
-/**
- * @brief 时间戳高16位（由TIM7溢出中断维护）
- *
- * 设计说明：
- * - TIM7配置为16位自动重载（ARR=65535）
- * - 每65536us（约65.5ms）溢出一次
- * - 溢出时g_time_high16++
- * - Time_GetUs()组合高低位为32位时间戳
- *
- * 线程安全：
- * - 32位系统中，uint16_t读写是原子的
- * - 读CNT和读g_time_high16之间可能发生中断
- * - 但通过检测CNT回滚可以正确处理
- */
-static volatile uint16_t g_time_high16 = 0;
+/* 时间戳高48位（低16位为TIM7->CNT），每65.536ms溢出递增
+ * 注意：使用uint64_t类型确保可以递增到48位 */
+static volatile uint64_t g_time_high48 = 0;
 
-/**
- * @brief 初始化时间戳模块
- */
 void Time_Init(void) {
-    /* 重置高16位计数器 */
-    g_time_high16 = 0;
-
-    /* 启动TIM7（需要在tim.c中配置好） */
-    HAL_TIM_Base_Start_IT(&htim7);
+  g_time_high48 = 0;
+  HAL_TIM_Base_Start_IT(&htim7);
 }
 
 /**
- * @brief 获取当前32位微秒时间戳
+ * @brief 获取64位微秒时间戳（原子版本，用于中断）
  *
- * 实现原理：
- * 1. 先读取低16位（CNT寄存器）
- * 2. 再读取高16位（软件变量）
- * 3. 检测CNT是否发生回滚（溢出）
- * 4. 组合为32位时间戳
+ * 在中断中调用时，禁用中断确保读取原子性
  *
- * 边界情况处理：
- * - 读CNT后、读g_time_high16前发生溢出：
- *   CNT会变小（如65500→100），g_time_high16已+1
- *   此时组合结果错误，但可以通过检测CNT < 32768判断
- * - 解决方案：如果CNT很小，可能是溢出，需要重新读取
+ * @return 64位微秒时间戳
  */
-uint32_t Time_GetUs(void) {
-    uint16_t cnt_low;
-    uint16_t high;
+uint64_t Time_GetUs(void) {
+  uint16_t cnt_low;
+  uint64_t high;
 
-    /* 读取低16位（CNT）和高16位 */
-    cnt_low = __HAL_TIM_GET_COUNTER(&htim7);
-    high = g_time_high16;
+  /* 禁用中断确保原子读取 */
+  __disable_irq();
 
-    /* 检测溢出边界情况
-     * 如果CNT很小，且在读取过程中可能发生了溢出
-     * 则重新读取高16位以确保正确性
-     */
-    if (cnt_low < 32768) {
-        /* CNT在低半区，可能刚溢出，重新读取高16位确认 */
-        uint16_t high_check = g_time_high16;
-        if (high_check != high) {
-            /* 高16位确实变了，使用新值 */
-            high = high_check;
-        }
+  cnt_low = __HAL_TIM_GET_COUNTER(&htim7);
+  high = g_time_high48;
+
+  /* 处理溢出边界：如果CNT很小，可能刚发生溢出，重新读取高48位 */
+  if (cnt_low < 32768) {
+    uint64_t high_check = g_time_high48;
+    if (high_check != high) {
+      high = high_check;
     }
+  }
 
-    /* 组合为32位时间戳 */
-    return ((uint32_t)high << 16) | cnt_low;
+  /* 恢复中断 */
+  __enable_irq();
+
+  return (high << 16) | cnt_low;
 }
 
-/**
- * @brief TIM7溢出中断回调
- *
- * 功能：
- * - TIM7每65536us溢出一次
- * - 在中断中递增高16位
- *
- * 注意：此函数由TIM7_IRQHandler调用
- */
 void Time_TIM7IRQHandler(void) {
-    /* 递增高16位时间戳 */
-    g_time_high16++;
+  g_time_high48++;
 }
 
 /* ==================== 工具函数 ==================== */
 
-/**
- * @brief 微秒延时函数
- * @param udelay 延时时间（微秒）
- */
 void delay_us(uint32_t udelay) {
-    __IO uint32_t Delay = udelay * 72 / 8;  /* SystemCoreClock / 8U / 1000000U */
-    do {
-        __NOP();
-    } while (Delay --);
+  __IO uint32_t Delay = udelay * 72 / 8;  /* SystemCoreClock/8/1M */
+  do {
+    __NOP();
+  } while (Delay--);
 }
