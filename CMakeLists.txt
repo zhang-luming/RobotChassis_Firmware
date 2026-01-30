@@ -11,6 +11,7 @@ cmake_minimum_required(VERSION 3.22)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 
 # 定义构建类型
@@ -53,7 +54,6 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
         # ==================== 系统支持 ====================
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/System/timer.c
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/System/retarget.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/USER/user_config.c
 
         # ==================== 功能模块 ====================
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/Communication/comm_protocol.c
@@ -62,6 +62,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/ServoControl/servo_control.c
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/IMU/imu.c
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/LedControl/led_control.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/USER/TimeSync/ptp_sync.c
 )
 
 # 添加头文件包含路径
@@ -83,6 +84,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/ServoControl
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/IMU
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/LedControl
+        ${CMAKE_CURRENT_SOURCE_DIR}/USER/TimeSync
 )
 
 # 添加项目符号（宏定义）

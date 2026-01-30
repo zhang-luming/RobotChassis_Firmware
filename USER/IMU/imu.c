@@ -60,7 +60,7 @@ static uint8_t s_data_valid = 0;            /* 数据有效标志 */
 /* 中断处理控制 */
 static uint8_t s_irq_enabled = 0;           /* 中断处理使能标志 */
 static uint32_t s_irq_count = 0;            /* 中断计数器 */
-static uint32_t s_last_irq_timestamp_us = 0; /* 上次中断时间戳 */
+static uint64_t s_last_irq_timestamp_us = 0; /* 上次中断时间戳 */
 
 /* ==================== 私有函数声明 ==================== */
 
@@ -128,14 +128,14 @@ void IMU_IRQHandler(void) {
     }
 
     /* 获取时间戳和计数（调试用） */
-    uint32_t current_timestamp = Time_GetUs();
+    uint64_t current_timestamp = Time_GetUs();
     s_irq_count++;
 
 #ifdef DEBUG_ENABLE
     /* 仅在调试模式下计算时间间隔 */
     if (s_last_irq_timestamp_us != 0 && (s_irq_count % 100) == 0) {
-        uint32_t interval = current_timestamp - s_last_irq_timestamp_us;
-        DEBUG_VERBOSE("[IMU] #%lu Ts:%lu Int:%luus\r\n",
+        uint64_t interval = current_timestamp - s_last_irq_timestamp_us;
+        DEBUG_VERBOSE("[IMU] #%lu Ts:%llu Int:%lluus\r\n",
                       s_irq_count, current_timestamp, interval);
     }
 #endif
@@ -198,9 +198,9 @@ static void IMU_UpdateAndPublish(void) {
     s_data_valid = 1;
 
     /* ========== 4. 发送所有数据 ========== */
-    Comm_SendDataFrame(FUNC_EULER_ANGLE, s_euler_angle, 6);
-    Comm_SendDataFrame(FUNC_GYRO, s_gyro, 6);
-    Comm_SendDataFrame(FUNC_ACCEL, s_acc, 6);
+    Comm_SendDataFrame(FUNC_EULER_ANGLE, s_euler_angle, 3);
+    Comm_SendDataFrame(FUNC_GYRO, s_gyro, 3);
+    Comm_SendDataFrame(FUNC_ACCEL, s_acc, 3);
 }
 
 /* ==================== 数据获取接口实现 ==================== */

@@ -10,7 +10,7 @@
 协议格式：[0xFC][FuncCode][Data...][Checksum][0xDF]
 - 帧头：0xFC
 - 功能码：1字节
-- 数据：可变长度int16_t数组（大端序）
+- 数据：可变长度int16_t数组（小端序）
 - 校验和：XOR校验（包括帧头、功能码和数据段）
 - 帧尾：0xDF
 """
@@ -77,10 +77,10 @@ def calculate_xor_checksum(data: bytes) -> int:
 
 
 def parse_int16_array(data: bytes, num_values: int) -> List[int]:
-    """解析int16_t数组（大端序）"""
+    """解析int16_t数组（小端序）"""
     values = []
     for i in range(num_values):
-        value = struct.unpack('>h', data[i*2:(i+1)*2])[0]
+        value = struct.unpack('<h', data[i*2:(i+1)*2])[0]
         values.append(value)
     return values
 

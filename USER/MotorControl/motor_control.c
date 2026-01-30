@@ -35,18 +35,19 @@
 /* 目标速度（单位：CPS - Counts Per Second，编码器计数/秒） */
 static int16_t g_target_speeds[MOTOR_COUNT] = {0};
 
-/* 编码器累加值 */
-static int16_t g_encoder_accum[MOTOR_COUNT] = {0};
+/* ========== 控制模块专用变量 ========== */
+static int16_t g_control_last[MOTOR_COUNT] = {ENCODER_MIDDLE, ENCODER_MIDDLE,
+                                                ENCODER_MIDDLE, ENCODER_MIDDLE};
+static int16_t g_control_deltas[MOTOR_COUNT] = {0};
 
-/* 编码器上一次的值 */
-static int16_t g_encoder_last[MOTOR_COUNT] = {ENCODER_MIDDLE, ENCODER_MIDDLE,
-                                              ENCODER_MIDDLE, ENCODER_MIDDLE};
+/* ========== 上报模块专用变量 ========== */
+static int16_t g_report_last[MOTOR_COUNT] = {ENCODER_MIDDLE, ENCODER_MIDDLE,
+                                               ENCODER_MIDDLE, ENCODER_MIDDLE};
+static int16_t g_report_accum[MOTOR_COUNT] = {0};
 
-/* 编码器相对变化值（速度） */
-static int16_t g_encoder_deltas[MOTOR_COUNT] = {0};
 
 /* 上次调用时间戳（微秒） */
-static uint32_t g_last_update_time_us = 0;
+static uint64_t g_last_update_time_us = 0;
 
 /* 实际调用周期（毫秒）- 动态计算 */
 static float g_update_period_ms = 10.0f;
@@ -65,10 +66,10 @@ typedef struct {
 /* 4个电机的PID状态 */
 static MotorPID_t g_motor_pid[MOTOR_COUNT] = {0};
 
-/* 外部PID参数定义（在main.c中定义） */
-extern int16_t PID_P;
-extern int16_t PID_I;
-extern int16_t PID_D;
+/* PID默认参数（可通过串口动态调整） */
+static int16_t g_pid_p = 150;  /* 比例系数 */
+static int16_t g_pid_i = 10;   /* 积分系数 */
+static int16_t g_pid_d = 5;    /* 微分系数 */
 
 /* ==================== 私有函数前向声明 ==================== */
 static int16_t Motor_PIDControl(uint8_t motor_id, int16_t target_speed,
@@ -101,9 +102,9 @@ void Motor_Init(void) {
 
   /* 初始化PID状态 */
   for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
-    g_motor_pid[i].kp = PID_P;
-    g_motor_pid[i].ki = PID_I;
-    g_motor_pid[i].kd = PID_D;
+    g_motor_pid[i].kp = g_pid_p;
+    g_motor_pid[i].ki = g_pid_i;
+    g_motor_pid[i].kd = g_pid_d;
     g_motor_pid[i].bias = 0;
     g_motor_pid[i].bias_last = 0;
     g_motor_pid[i].bias_integral = 0;
@@ -118,24 +119,56 @@ void Motor_Init(void) {
  * @brief 读取编码器位置并上报（在IMU中断中调用）
  *
  * 功能：
- * - 读取4路编码器的当前累加位置
- * - 通过串口上报给上位机
+ * - 独立读取编码器增量并累加
+ * - 上报累加位置给上位机
+ *
+ * 优势：
+ * - 100Hz实时更新
+ * - 与Motor_UpdateControl()完全解耦
+ * - 不受控制模块重置CNT影响
  *
  * 注意：
  * - 此函数在IMU中断（100Hz）中调用
- * - 与IMU数据保持时间同步
- * - 只读取和上报，不执行任何控制逻辑
- * - 不重置编码器计数器（避免与控制执行冲突）
+ * - 维护独立的last和accum变量
  */
 void Motor_ReadAndReport(void) {
-  /* 读取当前编码器计数（相对于中间值的偏移） */
-  g_encoder_accum[0] = __HAL_TIM_GET_COUNTER(&htim2) - ENCODER_MIDDLE;
-  g_encoder_accum[1] = -(__HAL_TIM_GET_COUNTER(&htim3) - ENCODER_MIDDLE);
-  g_encoder_accum[2] = __HAL_TIM_GET_COUNTER(&htim4) - ENCODER_MIDDLE;
-  g_encoder_accum[3] = -(__HAL_TIM_GET_COUNTER(&htim5) - ENCODER_MIDDLE);
+  int16_t current_counter;
+  int16_t delta;
 
-  /* 发送编码器数据 - 直接使用Comm_SendDataFrame */
-  Comm_SendDataFrame(FUNC_ENCODER, g_encoder_accum, 8);
+  /* 电机A - TIM2 */
+  current_counter = __HAL_TIM_GET_COUNTER(&htim2);
+  delta = current_counter - g_report_last[0];
+  if (delta < -32767) delta += 65536;
+  else if (delta > 32767) delta -= 65536;
+  g_report_accum[0] += delta;
+  g_report_last[0] = current_counter;
+
+  /* 电机B - TIM3（反向） */
+  current_counter = __HAL_TIM_GET_COUNTER(&htim3);
+  delta = current_counter - g_report_last[1];
+  if (delta < -32767) delta += 65536;
+  else if (delta > 32767) delta -= 65536;
+  g_report_accum[1] -= delta;
+  g_report_last[1] = current_counter;
+
+  /* 电机C - TIM4 */
+  current_counter = __HAL_TIM_GET_COUNTER(&htim4);
+  delta = current_counter - g_report_last[2];
+  if (delta < -32767) delta += 65536;
+  else if (delta > 32767) delta -= 65536;
+  g_report_accum[2] += delta;
+  g_report_last[2] = current_counter;
+
+  /* 电机D - TIM5（反向） */
+  current_counter = __HAL_TIM_GET_COUNTER(&htim5);
+  delta = current_counter - g_report_last[3];
+  if (delta < -32767) delta += 65536;
+  else if (delta > 32767) delta -= 65536;
+  g_report_accum[3] -= delta;
+  g_report_last[3] = current_counter;
+
+  /* 发送编码器数据 */
+  Comm_SendDataFrame(FUNC_ENCODER, g_report_accum, MOTOR_COUNT);
 }
 
 /**
@@ -143,81 +176,77 @@ void Motor_ReadAndReport(void) {
  *
  * 功能：
  * 1. 计算时间差（自适应调用周期）
- * 2. 读取编码器增量（用于PID）
+ * 2. 读取编码器增量（用于PID控制）
  * 3. 重置编码器到中间值
- * 4. 更新累加值（供上报使用）
- * 5. 执行PID控制
- * 6. 输出PWM
+ * 4. 执行PID控制并输出PWM
  *
+ * 注意：
+ * - 与Motor_ReadAndReport()完全解耦
+ * - 维护独立的control_last和control_deltas变量
+ * - 不再维护encoder_accum（由上报模块负责）
  */
 void Motor_UpdateControl(void) {
   int16_t current_counter;
-  uint32_t current_time_us = Time_GetUs();
-  uint32_t elapsed_us = current_time_us - g_last_update_time_us;
+  uint64_t current_time_us = Time_GetUs();
+  uint64_t elapsed_us = current_time_us - g_last_update_time_us;
 
   g_last_update_time_us = current_time_us;
   g_update_period_ms = elapsed_us / 1000.0f;
 
-  /* 1. 读取编码器增量（带溢出检测） */
+  /* 1. 读取编码器增量（用于PID控制） */
   /* 电机A - TIM2 */
   current_counter = __HAL_TIM_GET_COUNTER(&htim2);
-  int16_t delta0 = current_counter - g_encoder_last[0];
+  int16_t delta0 = current_counter - g_control_last[0];
   if (delta0 < -32767) {
     delta0 += 65536;
   } else if (delta0 > 32767) {
     delta0 -= 65536;
   }
-  g_encoder_deltas[0] = delta0;
+  g_control_deltas[0] = delta0;
 
   /* 电机B - TIM3 */
   current_counter = __HAL_TIM_GET_COUNTER(&htim3);
-  int16_t delta1 = current_counter - g_encoder_last[1];
+  int16_t delta1 = current_counter - g_control_last[1];
   if (delta1 < -32767) {
     delta1 += 65536;
   } else if (delta1 > 32767) {
     delta1 -= 65536;
   }
-  g_encoder_deltas[1] = -delta1;
+  g_control_deltas[1] = -delta1;
 
   /* 电机C - TIM4 */
   current_counter = __HAL_TIM_GET_COUNTER(&htim4);
-  int16_t delta2 = current_counter - g_encoder_last[2];
+  int16_t delta2 = current_counter - g_control_last[2];
   if (delta2 < -32767) {
     delta2 += 65536;
   } else if (delta2 > 32767) {
     delta2 -= 65536;
   }
-  g_encoder_deltas[2] = delta2;
+  g_control_deltas[2] = delta2;
 
   /* 电机D - TIM5 */
   current_counter = __HAL_TIM_GET_COUNTER(&htim5);
-  int16_t delta3 = current_counter - g_encoder_last[3];
+  int16_t delta3 = current_counter - g_control_last[3];
   if (delta3 < -32767) {
     delta3 += 65536;
   } else if (delta3 > 32767) {
     delta3 -= 65536;
   }
-  g_encoder_deltas[3] = -delta3;
+  g_control_deltas[3] = -delta3;
 
   /* 2. 重置编码器到中间值 */
   TIM2->CNT = ENCODER_MIDDLE;
   TIM3->CNT = ENCODER_MIDDLE;
   TIM4->CNT = ENCODER_MIDDLE;
   TIM5->CNT = ENCODER_MIDDLE;
-  g_encoder_last[0] = ENCODER_MIDDLE;
-  g_encoder_last[1] = ENCODER_MIDDLE;
-  g_encoder_last[2] = ENCODER_MIDDLE;
-  g_encoder_last[3] = ENCODER_MIDDLE;
+  g_control_last[0] = ENCODER_MIDDLE;
+  g_control_last[1] = ENCODER_MIDDLE;
+  g_control_last[2] = ENCODER_MIDDLE;
+  g_control_last[3] = ENCODER_MIDDLE;
 
-  /* 3. 更新累加值（供上报使用） */
-  g_encoder_accum[0] += g_encoder_deltas[0];
-  g_encoder_accum[1] += g_encoder_deltas[1];
-  g_encoder_accum[2] += g_encoder_deltas[2];
-  g_encoder_accum[3] += g_encoder_deltas[3];
-
-  /* 4. PID控制并输出PWM */
+  /* 3. PID控制并输出PWM */
   for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
-    int16_t pwm = Motor_PIDControl(i, g_target_speeds[i], g_encoder_deltas[i]);
+    int16_t pwm = Motor_PIDControl(i, g_target_speeds[i], g_control_deltas[i]);
     Motor_SetSpeed(i, pwm);
   }
 }
@@ -246,8 +275,8 @@ void Motor_ProcessSpeedFrame(uint8_t *frame, uint16_t frame_len) {
 
     /* centi-CPS转换为编码器增量（直接转换，无需额外函数调用） */
     if (i < MOTOR_COUNT) {
-      /* speed单位是CPS/100，转换为编码器增量 */
-      g_target_speeds[i] = (int16_t)(speed * g_update_period_ms / 10.0f);
+      /* speed单位是CPS/100，转换为编码器增量，扩大一百倍防止目标速度太大无法使用两字节表示 */
+      g_target_speeds[i] = (int16_t)(speed * g_update_period_ms / 1000.f * 100.0f);
     }
   }
 }
@@ -269,11 +298,11 @@ void Motor_ProcessSetPID(uint8_t motor_id, int16_t kp, int16_t ki, int16_t kd) {
     g_motor_pid[motor_id].bias_integral = 0;
     g_motor_pid[motor_id].bias_last = 0;
 
-    /* 同时更新外部全局变量（保持兼容性） */
+    /* 同时更新默认值（当设置电机0时） */
     if (motor_id == 0) {
-      PID_P = kp;
-      PID_I = ki;
-      PID_D = kd;
+      g_pid_p = kp;
+      g_pid_i = ki;
+      g_pid_d = kd;
     }
   }
 }

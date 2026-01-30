@@ -33,6 +33,7 @@
 #include "power_management.h"
 #include "servo_control.h"
 #include "imu.h"
+#include "ptp_sync.h"
 #include "System/timer.h"
 #include "System/retarget.h"
 #include "System/debug.h"
@@ -134,6 +135,7 @@ int main(void) {
     Motor_Init();         /* 电机控制模块 */
     Power_Init();         /* 电源管理模块 */
     Servo_Init();         /* 舵机控制模块 */
+    PTP_Init();           /* PTP时间同步模块 */
     Comm_Init();          /* 通信模块 */
 
     /* MPU6050 IMU初始化 */
@@ -180,7 +182,7 @@ int main(void) {
             Comm_Update();          /* 处理接收数据并分发指令 */
             Motor_UpdateControl();  // 电机控制
             LED_Update();   // LED控制
-            Servo_Update();  // 舵机控制（预定义接口）
+            Servo_Update(); // 舵机控制
 
             /* 每200ms执行 */
             if (Run_Times % 20 == 0) {

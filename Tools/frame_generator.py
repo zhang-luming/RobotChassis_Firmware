@@ -48,10 +48,10 @@ def generate_motor_frame(speed_a, speed_b, speed_c, speed_d):
     # 构建帧数据（不包括校验和和帧尾）
     frame_data = [0xFC, 0x06]  # 帧头 + 功能码
 
-    # 添加4个电机的速度（大端序int16_t）
+    # 添加4个电机的速度（小端序int16_t）
     for speed in speeds:
-        frame_data.append((speed >> 8) & 0xFF)
-        frame_data.append(speed & 0xFF)
+        frame_data.append(speed & 0xFF)          # 低字节在前
+        frame_data.append((speed >> 8) & 0xFF)   # 高字节在后
 
     # 计算校验和
     checksum = calculate_checksum(frame_data)
@@ -84,12 +84,12 @@ def generate_pid_frame(kp, ki, kd):
     frame_data = [
         0xFC,              # 帧头
         0x07,              # 功能码：PID参数设置
+        kp_val & 0xFF,         # Kp低字节（小端序）
         (kp_val >> 8) & 0xFF,  # Kp高字节
-        kp_val & 0xFF,         # Kp低字节
-        (ki_val >> 8) & 0xFF,  # Ki高字节
         ki_val & 0xFF,         # Ki低字节
-        (kd_val >> 8) & 0xFF,  # Kd高字节
+        (ki_val >> 8) & 0xFF,  # Ki高字节
         kd_val & 0xFF,         # Kd低字节
+        (kd_val >> 8) & 0xFF,  # Kd高字节
     ]
 
     # 计算校验和
