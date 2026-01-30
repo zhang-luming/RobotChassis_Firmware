@@ -88,6 +88,7 @@ Icon
 *.pptx.tmp
 *.xlsx.tmp
 *.docx.tmp
+.cache
 
 # ==================== Python（项目工具） ====================
 __pycache__/
@@ -106,6 +107,7 @@ ENV/
 *.sln.docstates
 
 # ==================== 其他 ====================
+.claude/
 .history/
 *.depend
 .cproject

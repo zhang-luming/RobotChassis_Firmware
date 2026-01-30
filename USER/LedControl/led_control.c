@@ -1,104 +1,63 @@
+/**
+ ******************************************************************************
+ * @file    led_control.c
+ * @brief   LED控制模块实现
+ ******************************************************************************
+ */
+
 #include "led_control.h"
 
 /* ==================== 私有变量 ==================== */
+static LedState_t g_state = LED_STATE_OFF;
+static uint16_t g_counter = 0;
 
-static LedState_t current_state = LED_STATE_OFF;
-static uint16_t blink_counter = 0;
-static uint8_t led_status = 0;  /* 0-灭, 1-亮 */
+/* ==================== 私有函数 ==================== */
 
-/* ==================== 函数实现 ==================== */
-
-/**
- * @brief 初始化LED控制模块
- */
-void LED_Init(void)
-{
-    current_state = LED_STATE_OFF;
-    blink_counter = 0;
-    led_status = 0;
-
-    /* 初始状态：点亮LED表示系统运行 */
-    HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);  /* 低电平点亮 */
-    led_status = 1;
+static void led_set(LedState_t state) {
+    g_state = state;
+    g_counter = 0;
+    HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
 }
 
-/**
- * @brief 设置LED状态
- */
-void LED_SetState(LedState_t state)
-{
-    current_state = state;
-    blink_counter = 0;
+/* ==================== 公共接口实现 ==================== */
 
-    /* 立即响应关闭和常亮状态 */
-    if(state == LED_STATE_OFF)
-    {
-        HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
-        led_status = 0;
-    }
-    else if(state == LED_STATE_ON)
-    {
-        HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
-        led_status = 1;
-    }
+void LED_Init(void) {
+    HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
 }
 
-/**
- * @brief LED状态更新（在10ms定时器中调用）
- */
-void LED_Update(void)
-{
-    blink_counter++;
+void LED_Update(void) {
+    g_counter++;
 
-    switch(current_state)
-    {
+    switch (g_state) {
         case LED_STATE_OFF:
-            /* 保持关闭 */
+            HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
             break;
 
         case LED_STATE_ON:
-            /* 保持常亮 */
+            HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
             break;
 
         case LED_STATE_SLOW_BLINK:
-            /* 慢闪：400ms周期 (200ms亮, 200ms灭) */
-            if(blink_counter >= 20)  /* 20 * 10ms = 200ms */
-            {
-                blink_counter = 0;
-                LED_Toggle();
+            if (g_counter >= 20) {
+                g_counter = 0;
+                HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
             }
             break;
 
         case LED_STATE_FAST_BLINK:
-            /* 快闪：100ms周期 (50ms亮, 50ms灭) */
-            if(blink_counter >= 5)  /* 5 * 10ms = 50ms */
-            {
-                blink_counter = 0;
-                LED_Toggle();
+        case LED_STATE_ERROR:
+            if (g_counter >= 5) {
+                g_counter = 0;
+                HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
             }
             break;
 
         case LED_STATE_HEARTBEAT:
-            /* 心跳：2000ms周期 (100ms亮, 1900ms灭) */
-            if(blink_counter == 10)  /* 100ms时关闭 */
-            {
+            if (g_counter == 5) {
                 HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
-                led_status = 0;
-            }
-            else if(blink_counter >= 200)  /* 2000ms时点亮并重置 */
-            {
-                blink_counter = 0;
+            } else if (g_counter >= 200) {
+                g_counter = 0;
                 HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
-                led_status = 1;
-            }
-            break;
-
-        case LED_STATE_ERROR:
-            /* 错误提示：50ms快闪 */
-            if(blink_counter >= 2)  /* 2 * 10ms = 20ms (实际约40ms周期) */
-            {
-                blink_counter = 0;
-                LED_Toggle();
             }
             break;
 
@@ -107,28 +66,29 @@ void LED_Update(void)
     }
 }
 
-/**
- * @brief 直接控制LED开关
- */
-void LED_SetDirect(uint8_t state)
-{
-    if(state)
-    {
-        HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
-        led_status = 1;
-    }
-    else
-    {
-        HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
-        led_status = 0;
-    }
+/* ==================== 状态控制接口 ==================== */
+
+void LED_Off(void) {
+    HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
+    g_state = LED_STATE_OFF;
 }
 
-/**
- * @brief 切换LED状态
- */
-void LED_Toggle(void)
-{
-    HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-    led_status = !led_status;
+void LED_On(void) {
+    led_set(LED_STATE_ON);
+}
+
+void LED_SlowBlink(void) {
+    led_set(LED_STATE_SLOW_BLINK);
+}
+
+void LED_FastBlink(void) {
+    led_set(LED_STATE_FAST_BLINK);
+}
+
+void LED_Heartbeat(void) {
+    led_set(LED_STATE_HEARTBEAT);
+}
+
+void LED_Error(void) {
+    led_set(LED_STATE_ERROR);
 }

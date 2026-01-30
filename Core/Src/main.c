@@ -32,12 +32,13 @@
 #include "motor_control.h"
 #include "power_management.h"
 #include "servo_control.h"
-#include "imu_data.h"
-#include "EXIT.h"
+#include "imu.h"
+#include "ptp_sync.h"
+#include "System/timer.h"
 #include "System/retarget.h"
+#include "System/debug.h"
 #include "led_control.h"
 
-#define Debug
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -112,16 +113,20 @@ int main(void) {
     MX_USART2_UART_Init();
     MX_TIM3_Init();
     MX_TIM6_Init();
+    MX_TIM7_Init();  /* 微秒时间戳定时器 */
     /* USER CODE BEGIN 2 */
 
     /* 启动系统定时器 */
     HAL_TIM_Base_Init(&htim6);
     HAL_TIM_Base_Start_IT(&htim6);
 
+    /* 初始化微秒时间戳模块 */
+    Time_Init();
+
     /* 初始化stdio重定向（printf支持） */
     RetargetInit(&huart1);  /* 传入USART1句柄，用于调试日志输出 */
 
-    printf("系统初始化开始...\r\n");
+    DEBUG_INFO("系统初始化开始...\r\n");
 
     /* 初始化LED控制模块 */
     LED_Init();
@@ -130,18 +135,36 @@ int main(void) {
     Motor_Init();         /* 电机控制模块 */
     Power_Init();         /* 电源管理模块 */
     Servo_Init();         /* 舵机控制模块 */
+    PTP_Init();           /* PTP时间同步模块 */
     Comm_Init();          /* 通信模块 */
 
     /* MPU6050 IMU初始化 */
-    if (IMU_Init() != 0) {
-        printf("MPU6050初始化失败!!!\r\n");
-        LED_SetState(LED_STATE_ERROR);  /* LED快闪表示错误 */
+    const uint8_t imu_result = IMU_Init();
+    if (imu_result != 0) {
+        DEBUG_ERROR("MPU6050初始化失败 (错误码:%d)\r\n", imu_result);
+        switch (imu_result) {
+            case 1: DEBUG_ERROR("  -> 传感器设置失败\r\n"); break;
+            case 2: DEBUG_ERROR("  -> FIFO配置失败\r\n"); break;
+            case 3: DEBUG_ERROR("  -> 采样率设置失败\r\n"); break;
+            case 4: DEBUG_ERROR("  -> DMP固件加载失败\r\n"); break;
+            case 5: DEBUG_ERROR("  -> 方向矩阵设置失败\r\n"); break;
+            case 6: DEBUG_ERROR("  -> DMP功能使能失败\r\n"); break;
+            case 7: DEBUG_ERROR("  -> FIFO速率设置失败\r\n"); break;
+            case 8: DEBUG_ERROR("  -> 传感器自检失败 (请确保底盘静止且水平放置)\r\n"); break;
+            case 9: DEBUG_ERROR("  -> DMP使能失败\r\n"); break;
+            case 10: DEBUG_ERROR("  -> MPU初始化失败\r\n"); break;
+            default: DEBUG_ERROR("  -> 未知错误\r\n"); break;
+        }
+        LED_Error();  /* LED快闪表示错误 */
     } else {
-        printf("MPU6050初始化成功\r\n");
-        LED_SetState(LED_STATE_HEARTBEAT);  /* LED心跳表示正常运行 */
+        DEBUG_INFO("MPU6050初始化成功\r\n");
+
+        LED_Heartbeat();  /* LED心跳表示正常运行 */
     }
 
-    printf("ROS底板开始运行\r\n");
+    DEBUG_INFO("ROS底板开始运行\r\n");
+
+    IMU_SetEnabled(1);
 
     /* USER CODE END 2 */
 
@@ -151,80 +174,22 @@ int main(void) {
         /* USER CODE END WHILE */
 
         /* USER CODE BEGIN 3 */
-        if (Judge_Time_OUT()) /* 判断10ms时间是否到了 */
+        if (Timer_IsTim6Timeout()) /* 判断10ms时间是否到了 */
         {
             Run_Times++;
 
-            /* 更新LED状态 */
-            LED_Update();
+            /* ========== 系统更新 ========== */
+            Comm_Update();          /* 处理接收数据并分发指令 */
+            Motor_UpdateControl();  // 电机控制
+            LED_Update();   // LED控制
+            Servo_Update(); // 舵机控制
 
-            /* 处理串口接收的控制数据 */
-            Comm_ProcessControlData();
-
-            /* 更新IMU数据 */
-            IMU_Update();
-
-            /* 发送IMU数据 */
-            {
-                int16_t data[3];
-
-                /* 发送欧拉角 */
-                IMU_GetEulerAngle(data);
-                Comm_SendEulerAngle(data);
-
-                /* 发送陀螺仪 */
-                IMU_GetGyro(data);
-                Comm_SendGyro(data);
-
-                /* 发送加速度 */
-                IMU_GetAccel(data);
-                Comm_SendAccel(data);
-            }
-
-            /* 编码器速度计算 - 每40毫秒计算一次 */
-            if (Run_Times % 4 == 0) {
-                int16_t encoder_values[4];
-
-                /* 更新编码器数据 */
-                Motor_UpdateEncoderDelta();
-
-                /* 获取编码器数据指针 */
-                int16_t *encoder_delta = Motor_GetEncoderDeltaArray();
-                int16_t *encoder_target = Motor_GetTargetSpeedArray();
-
-                /* PWM输出计算 */
-                int16_t motor_pwm_val = Motor_PIDControl(
-                    MOTOR_ID_A, encoder_target[0], encoder_delta[0]);
-                Motor_SetSpeed(MOTOR_ID_A, motor_pwm_val);
-
-                motor_pwm_val = Motor_PIDControl(
-                    MOTOR_ID_B, encoder_target[1], encoder_delta[1]);
-                Motor_SetSpeed(MOTOR_ID_B, motor_pwm_val);
-
-                motor_pwm_val = Motor_PIDControl(
-                    MOTOR_ID_C, encoder_target[2], encoder_delta[2]);
-                Motor_SetSpeed(MOTOR_ID_C, motor_pwm_val);
-
-                motor_pwm_val = Motor_PIDControl(
-                    MOTOR_ID_D, encoder_target[3], encoder_delta[3]);
-                Motor_SetSpeed(MOTOR_ID_D, motor_pwm_val);
-
-                printf("期望转速:%d,%d,%d,%d\r\n", encoder_delta[0], encoder_delta[1],
-                       encoder_delta[2], encoder_delta[3]);
-
-                /* 发送编码器数据 */
-                Motor_GetEncoder(encoder_values);
-                Comm_SendEncoder(encoder_values);
-            }
-
-            /* 电池电压检测 - 每200毫秒计算一次 */
+            /* 每200ms执行 */
             if (Run_Times % 20 == 0) {
-                /* 更新电池电压采样 */
-                Power_UpdateVoltage();
-
-                /* 发送电池电压 */
-                Comm_SendBatteryVoltage(Power_GetBatteryVoltage());
+                Power_Update();     /* 更新电池电压 */
+                Power_Send();
             }
+
         }
     }
     /* USER CODE END 3 */

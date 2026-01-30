@@ -15,7 +15,7 @@ extern "C" {
 
 #define MOTOR_COUNT 4
 
-/* ==================== 函数接口 ==================== */
+/* ==================== 核心接口 ==================== */
 
 /**
  * @brief 初始化电机控制模块
@@ -23,55 +23,68 @@ extern "C" {
 void Motor_Init(void);
 
 /**
- * @brief 设置电机目标速度
- * @param motor_id 电机ID (0-3)
- * @param speed 目标速度
+ * @brief 读取编码器位置并上报（在IMU中断中调用）
+ *
+ * 功能：
+ * - 读取4路编码器的当前累加位置
+ * - 通过串口上报给上位机
+ *
+ * 注意：
+ * - 此函数在IMU中断（100Hz）中调用
+ * - 与IMU数据保持时间同步
+ * - 只读取和上报，不执行任何控制逻辑
  */
-void Motor_SetTargetSpeed(uint8_t motor_id, int16_t speed);
+void Motor_ReadAndReport(void);
 
 /**
- * @brief 电机PID控制
- * @param motor_id 电机ID (0-3)
- * @param ideal_speed 理想速度
- * @param actual_speed 实际速度
- * @return PWM输出值
+ * @brief 执行电机控制
+ *
+ * 功能：
+ * - 计算时间差（自适应调用周期）
+ * - 读取编码器增量（用于PID）
+ * - 执行PID控制
+ * - 输出PWM
+ *
  */
-int16_t Motor_PIDControl(uint8_t motor_id, int16_t ideal_speed, int16_t actual_speed);
+void Motor_UpdateControl(void);
+
+/* ==================== 控制指令处理 ==================== */
 
 /**
- * @brief 设置电机PWM输出
- * @param motor_id 电机ID (0-3)
- * @param pwm PWM值
+ * @brief 处理电机速度控制帧（从通信协议调用）
+ * @param frame 帧数据指针
+ * @param frame_len 帧长度
+ *
+ * 帧格式：[FC][0x06][速度A高][速度A低][速度B高][速度B低][速度C高][速度C低][速度D高][速度D低][Checksum][DF]
+ *
+ * 功能：
+ * - 从通信帧中解析4个电机的速度
+ * - 单位：centi-CPS（CPS/100）
+ * - 转换为编码器增量并存储
  */
-void Motor_SetSpeed(uint8_t motor_id, int16_t pwm);
+void Motor_ProcessSpeedFrame(uint8_t *frame, uint16_t frame_len);
 
 /**
- * @brief 读取编码器相对变化值并更新累加值
+ * @brief 处理PID参数设置帧（从通信协议调用）
+ * @param frame 帧数据指针
+ * @param frame_len 帧长度
+ *
+ * 帧格式：[FC][0x07][Kp高][Kp低][Ki高][Ki低][Kd高][Kd低][Checksum][DF]
+ *
+ * 功能：
+ * - 从通信帧中解析PID参数
+ * - 为所有4个电机设置相同的PID参数
  */
-void Motor_UpdateEncoderDelta(void);
+void Motor_ProcessPIDFrame(uint8_t *frame, uint16_t frame_len);
 
 /**
- * @brief 获取编码器累加值
- * @param encoder_values 编码器数组[4]
+ * @brief 处理PID参数设置指令
+ * @param motor_id 电机ID
+ * @param kp P参数（放大100倍）
+ * @param ki I参数（放大100倍）
+ * @param kd D参数（放大100倍）
  */
-void Motor_GetEncoder(int16_t *encoder_values);
-
-/**
- * @brief 重置编码器计数器到中间值
- */
-void Motor_ResetEncoder(void);
-
-/**
- * @brief 获取编码器目标速度数组
- * @return 目标速度数组指针
- */
-int16_t* Motor_GetTargetSpeedArray(void);
-
-/**
- * @brief 获取编码器相对变化值数组
- * @return 相对变化值数组指针
- */
-int16_t* Motor_GetEncoderDeltaArray(void);
+void Motor_ProcessSetPID(uint8_t motor_id, int16_t kp, int16_t ki, int16_t kd);
 
 #ifdef __cplusplus
 }

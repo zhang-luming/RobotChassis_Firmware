@@ -1,3 +1,19 @@
+/**
+ ******************************************************************************
+ * @file    comm_protocol.h
+ * @brief   通信协议模块 - 串口通信
+ *
+ * 功能说明：
+ * - 接收控制指令并分发到各模块
+ * - 提供数据发送接口
+ *
+ * 模块接口：
+ * - Comm_Init(): 初始化模块
+ * - Comm_Update(): 处理接收数据并分发指令
+ * - Comm_Send*(): 提供发送接口供其他模块调用
+ ******************************************************************************
+ */
+
 #ifndef __COMM_PROTOCOL_H
 #define __COMM_PROTOCOL_H
 
@@ -20,9 +36,12 @@ extern "C" {
 #define FUNC_MOTOR_SPEED      0x06  /* 电机目标速度 */
 #define FUNC_PID_PARAM        0x07  /* PID参数设置 */
 #define FUNC_SERVO_CONTROL    0x08  /* 舵机控制 */
+#define FUNC_PTP_SYNC         0x10  /* PTP时间同步 */
 
-#define PROTOCOL_DATA_LEN     10    /* 数据长度 */
 #define RX_BUFFER_SIZE        256   /* 接收缓冲区大小 */
+
+/* PTP帧定义 */
+#define PTP_SYNC_REQUEST      0x01  /* PTP同步请求 */
 
 /* ==================== 类型定义 ==================== */
 
@@ -34,10 +53,10 @@ typedef struct {
     uint8_t complete;                /* 接收完成标志 */
 } CommRx_t;
 
-/* 串口发送缓冲 */
-extern uint8_t UART_SEND_BUF[20];
+/* 串口发送缓冲 - 增大到128字节以支持更长的数据帧 */
+extern uint8_t UART_SEND_BUF[128];
 
-/* ==================== 函数接口 ==================== */
+/* ==================== 核心接口 ==================== */
 
 /**
  * @brief 初始化通信模块
@@ -45,40 +64,18 @@ extern uint8_t UART_SEND_BUF[20];
 void Comm_Init(void);
 
 /**
- * @brief 处理接收到的控制数据
- * @note 在主循环中调用
+ * @brief 更新通信模块
+ *
+ * 功能：
+ * - 处理接收到的数据
+ * - 解析协议帧
+ * - 分发控制指令到各模块
+ *
+ * 注意：需要在主循环中每次调用
  */
-void Comm_ProcessControlData(void);
+void Comm_Update(void);
 
-/**
- * @brief 发送欧拉角数据
- * @param euler_angle 欧拉角数组[俯仰,横滚,航向]，数据已放大100倍
- */
-void Comm_SendEulerAngle(int16_t *euler_angle);
-
-/**
- * @brief 发送陀螺仪数据
- * @param gyro 陀螺仪数组[x,y,z]，单位: 0.01弧度/s
- */
-void Comm_SendGyro(int16_t *gyro);
-
-/**
- * @brief 发送加速度数据
- * @param acc 加速度数组[x,y,z]，单位: 0.01G
- */
-void Comm_SendAccel(int16_t *acc);
-
-/**
- * @brief 发送编码器数据
- * @param encoder 编码器数组[A,B,C,D]
- */
-void Comm_SendEncoder(int16_t *encoder);
-
-/**
- * @brief 发送电池电压
- * @param voltage 电池电压（mV）
- */
-void Comm_SendBatteryVoltage(uint16_t voltage);
+/* ==================== 工具函数 ==================== */
 
 /**
  * @brief 异或校验
@@ -95,6 +92,29 @@ uint8_t Comm_XORCheck(uint8_t *a, uint8_t len);
  * @param len 发送长度
  */
 void Comm_SendBuf(USART_TypeDef *USART_COM, uint8_t *buf, uint16_t len);
+
+/**
+ * @brief 公共接口：发送协议数据帧
+ * @param func_code 功能码
+ * @param data 数据指针（int16_t数组）
+ * @param data_len 数据长度（int16_t个数）
+ *
+ * 功能：
+ * - 自动打包协议帧：[0xFC][FuncCode][Data...][Checksum][0xDF]
+ * - 支持动态数据长度
+ * - 校验位计算包括帧头、功能码和数据段
+ * - 各模块可调用此接口发送数据
+ *
+ * 数据格式：int16_t按大端序转换为uint8_t字节流
+ * - int16_t值 0x1234 → 0x12 0x34（高字节在前）
+ *
+ * 示例：
+ * - Comm_SendDataFrame(FUNC_EULER_ANGLE, euler, 3);   // 3个int16_t
+ * - Comm_SendDataFrame(FUNC_GYRO, gyro, 3);           // 3个int16_t
+ * - Comm_SendDataFrame(FUNC_ENCODER, encoders, 4);    // 4个int16_t
+ * - Comm_SendDataFrame(FUNC_BATTERY_VOLTAGE, &voltage, 1);  // 1个int16_t
+ */
+void Comm_SendDataFrame(uint8_t func_code, int16_t *data, uint8_t data_len);
 
 /**
  * @brief 串口接收中断回调
