@@ -56,11 +56,14 @@ void Motor_UpdateControl(void);
  * @param frame_len 帧长度
  *
  * 帧格式：[FC][0x06][速度A高][速度A低][速度B高][速度B低][速度C高][速度C低][速度D高][速度D低][Checksum][DF]
+ * 索引：   0    1      2        3       4        5       6        7       8       9       10      11
+ * 11
  *
  * 功能：
- * - 从通信帧中解析4个电机的速度
- * - 单位：centi-CPS（CPS/100）
- * - 转换为编码器增量并存储
+ * - 从帧中解析4个电机的速度（小端序int16_t）
+ * - 单位：CPS (Counts Per Second，每秒编码器脉冲数)
+ * - 转换为编码器增量（counts/控制周期）并存储
+ *
  */
 void Motor_ProcessSpeedFrame(uint8_t *frame, uint16_t frame_len);
 

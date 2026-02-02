@@ -167,7 +167,7 @@ class PTPSync:
             delta_t2 = t2_mcu - self.last_t2
             delta_t1 = t1 - self.last_t1
             # 如果时间间隔异常（>1秒），说明中间有timeout或丢包
-            if delta_t1 > 1000000 or delta_t2 > 1000000:
+            if delta_t1 > 5000000 or delta_t2 > 5000000:
                 print(f"[警告] 异常时间间隔: Δt1={delta_t1/1000:.1f}ms, Δt2={delta_t2/1000:.1f}ms，跳过本次")
                 # 跳过本次，但更新last_t1和last_t2以便下次正常计算
                 self.last_t1 = t1
@@ -203,13 +203,13 @@ class PTPSync:
         offset_ptp = ((t2_unix - t1) - (t4 - t3_unix)) / 2
         delay = ((t4 - t1) + (t3_unix - t2_unix)) / 2
 
-        # 检测异常的offset值（可能由timeout导致的）
-        if abs(offset_ptp) > 5000:
-            print(f"[警告] 异常偏差值: {offset_ptp:.1f} us，跳过本次")
-            # 更新last_t1和last_t2
-            self.last_t1 = t1
-            self.last_t2 = t2_mcu
-            return
+        # # 检测异常的offset值（可能由timeout导致的）
+        # if abs(offset_ptp) > 5000:
+        #     print(f"[警告] 异常偏差值: {offset_ptp:.1f} us，跳过本次")
+        #     # 更新last_t1和last_t2
+        #     self.last_t1 = t1
+        #     self.last_t2 = t2_mcu
+        #     return
 
         # ===== 使用PI控制器让offset快速收敛 =====
         # P项：比例控制（直接响应当前误差）
@@ -293,7 +293,7 @@ class PTPSync:
             print(f"      时域偏移={self.g_offset} us")
         print("-" * 80)
 
-    def run(self, interval=0.2):
+    def run(self, interval=0.5):
         """持续运行PTP同步，直到用户按Ctrl+C停止"""
         try:
             while True:

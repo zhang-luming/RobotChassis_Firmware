@@ -36,14 +36,14 @@
 static int16_t g_target_speeds[MOTOR_COUNT] = {0};
 
 /* ========== 控制模块专用变量 ========== */
-static int16_t g_control_last[MOTOR_COUNT] = {ENCODER_MIDDLE, ENCODER_MIDDLE,
+static uint16_t g_control_last[MOTOR_COUNT] = {ENCODER_MIDDLE, ENCODER_MIDDLE,
                                                 ENCODER_MIDDLE, ENCODER_MIDDLE};
 static int16_t g_control_deltas[MOTOR_COUNT] = {0};
 
 /* ========== 上报模块专用变量 ========== */
-static int16_t g_report_last[MOTOR_COUNT] = {ENCODER_MIDDLE, ENCODER_MIDDLE,
+static uint16_t g_report_last[MOTOR_COUNT] = {ENCODER_MIDDLE, ENCODER_MIDDLE,
                                                ENCODER_MIDDLE, ENCODER_MIDDLE};
-static int16_t g_report_accum[MOTOR_COUNT] = {0};
+static int32_t g_report_accum[MOTOR_COUNT] = {0};  /* int32避免溢出，支持长时间运行 */
 
 
 /* 上次调用时间戳（微秒） */
@@ -132,28 +132,28 @@ void Motor_Init(void) {
  * - 维护独立的last和accum变量
  */
 void Motor_ReadAndReport(void) {
-  int16_t current_counter;
+  uint16_t current_counter;
   int16_t delta;
 
   /* 电机A - TIM2 */
   current_counter = __HAL_TIM_GET_COUNTER(&htim2);
-  delta = current_counter - g_report_last[0];
-  if (delta < -32767) delta += 65536;
-  else if (delta > 32767) delta -= 65536;
+  delta = (int16_t)current_counter - (int16_t)g_report_last[0];
+  if (delta < -32767) delta += 65536;   /* 处理向前溢出：65535→0 */
+  else if (delta > 32767) delta -= 65536; /* 处理向后溢出：0→65535 */
   g_report_accum[0] += delta;
   g_report_last[0] = current_counter;
 
   /* 电机B - TIM3（反向） */
   current_counter = __HAL_TIM_GET_COUNTER(&htim3);
-  delta = current_counter - g_report_last[1];
+  delta = (int16_t)current_counter - (int16_t)g_report_last[1];
   if (delta < -32767) delta += 65536;
   else if (delta > 32767) delta -= 65536;
-  g_report_accum[1] -= delta;
+  g_report_accum[1] -= delta;  /* 电机B反向 */
   g_report_last[1] = current_counter;
 
   /* 电机C - TIM4 */
   current_counter = __HAL_TIM_GET_COUNTER(&htim4);
-  delta = current_counter - g_report_last[2];
+  delta = (int16_t)current_counter - (int16_t)g_report_last[2];
   if (delta < -32767) delta += 65536;
   else if (delta > 32767) delta -= 65536;
   g_report_accum[2] += delta;
@@ -161,14 +161,21 @@ void Motor_ReadAndReport(void) {
 
   /* 电机D - TIM5（反向） */
   current_counter = __HAL_TIM_GET_COUNTER(&htim5);
-  delta = current_counter - g_report_last[3];
+  delta = (int16_t)current_counter - (int16_t)g_report_last[3];
   if (delta < -32767) delta += 65536;
   else if (delta > 32767) delta -= 65536;
-  g_report_accum[3] -= delta;
+  g_report_accum[3] -= delta;  /* 电机D反向 */
   g_report_last[3] = current_counter;
 
-  /* 发送编码器数据 */
-  Comm_SendDataFrame(FUNC_ENCODER, g_report_accum, MOTOR_COUNT);
+  /* 将int32拆分为2个int16发送（避免int16溢出） */
+  int16_t tx_data[8];
+  for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
+    tx_data[i * 2]     = (int16_t)(g_report_accum[i] & 0xFFFF);        /* 低16位 */
+    tx_data[i * 2 + 1] = (int16_t)((g_report_accum[i] >> 16) & 0xFFFF); /* 高16位 */
+  }
+
+  /* 发送编码器数据（8个int16 = 4个int32） */
+  Comm_SendDataFrame(FUNC_ENCODER, tx_data, 8);
 }
 
 /**
@@ -177,16 +184,25 @@ void Motor_ReadAndReport(void) {
  * 功能：
  * 1. 计算时间差（自适应调用周期）
  * 2. 读取编码器增量（用于PID控制）
- * 3. 重置编码器到中间值
- * 4. 执行PID控制并输出PWM
+ * 3. 执行PID控制并输出PWM
+ *
+ * 溢出处理原理：
+ * - 16位计数器范围：0 ~ 65535
+ * - 通过增量计算自动检测溢出边界（±32767）
+ * - 不重置CNT，让硬件计数器自由运行
+ * - 例：last=65000, current=100 → delta=100-65000=-64900 < -32767 → delta+=65536=636 ✓
+ *
+ * 优势：
+ * - 与Motor_ReadAndReport()完全解耦，无模块冲突
+ * - 维护独立的control_last变量
+ * - 不重置CNT，避免干扰上报模块
  *
  * 注意：
- * - 与Motor_ReadAndReport()完全解耦
- * - 维护独立的control_last和control_deltas变量
- * - 不再维护encoder_accum（由上报模块负责）
+ * - 此函数在TIM6中断（100Hz）中调用
+ * - 只读取增量并执行PID，不维护累加器
  */
 void Motor_UpdateControl(void) {
-  int16_t current_counter;
+  uint16_t current_counter;
   uint64_t current_time_us = Time_GetUs();
   uint64_t elapsed_us = current_time_us - g_last_update_time_us;
 
@@ -196,55 +212,37 @@ void Motor_UpdateControl(void) {
   /* 1. 读取编码器增量（用于PID控制） */
   /* 电机A - TIM2 */
   current_counter = __HAL_TIM_GET_COUNTER(&htim2);
-  int16_t delta0 = current_counter - g_control_last[0];
-  if (delta0 < -32767) {
-    delta0 += 65536;
-  } else if (delta0 > 32767) {
-    delta0 -= 65536;
-  }
+  int16_t delta0 = (int16_t)current_counter - (int16_t)g_control_last[0];
+  if (delta0 < -32767) delta0 += 65536;   /* 处理向前溢出：65535→0 */
+  else if (delta0 > 32767) delta0 -= 65536; /* 处理向后溢出：0→65535 */
   g_control_deltas[0] = delta0;
+  g_control_last[0] = current_counter;  /* 更新last，不重置CNT */
 
   /* 电机B - TIM3 */
   current_counter = __HAL_TIM_GET_COUNTER(&htim3);
-  int16_t delta1 = current_counter - g_control_last[1];
-  if (delta1 < -32767) {
-    delta1 += 65536;
-  } else if (delta1 > 32767) {
-    delta1 -= 65536;
-  }
-  g_control_deltas[1] = -delta1;
+  int16_t delta1 = (int16_t)current_counter - (int16_t)g_control_last[1];
+  if (delta1 < -32767) delta1 += 65536;
+  else if (delta1 > 32767) delta1 -= 65536;
+  g_control_deltas[1] = -delta1;  /* 电机B反向 */
+  g_control_last[1] = current_counter;
 
   /* 电机C - TIM4 */
   current_counter = __HAL_TIM_GET_COUNTER(&htim4);
-  int16_t delta2 = current_counter - g_control_last[2];
-  if (delta2 < -32767) {
-    delta2 += 65536;
-  } else if (delta2 > 32767) {
-    delta2 -= 65536;
-  }
+  int16_t delta2 = (int16_t)current_counter - (int16_t)g_control_last[2];
+  if (delta2 < -32767) delta2 += 65536;
+  else if (delta2 > 32767) delta2 -= 65536;
   g_control_deltas[2] = delta2;
+  g_control_last[2] = current_counter;
 
   /* 电机D - TIM5 */
   current_counter = __HAL_TIM_GET_COUNTER(&htim5);
-  int16_t delta3 = current_counter - g_control_last[3];
-  if (delta3 < -32767) {
-    delta3 += 65536;
-  } else if (delta3 > 32767) {
-    delta3 -= 65536;
-  }
-  g_control_deltas[3] = -delta3;
+  int16_t delta3 = (int16_t)current_counter - (int16_t)g_control_last[3];
+  if (delta3 < -32767) delta3 += 65536;
+  else if (delta3 > 32767) delta3 -= 65536;
+  g_control_deltas[3] = -delta3;  /* 电机D反向 */
+  g_control_last[3] = current_counter;
 
-  /* 2. 重置编码器到中间值 */
-  TIM2->CNT = ENCODER_MIDDLE;
-  TIM3->CNT = ENCODER_MIDDLE;
-  TIM4->CNT = ENCODER_MIDDLE;
-  TIM5->CNT = ENCODER_MIDDLE;
-  g_control_last[0] = ENCODER_MIDDLE;
-  g_control_last[1] = ENCODER_MIDDLE;
-  g_control_last[2] = ENCODER_MIDDLE;
-  g_control_last[3] = ENCODER_MIDDLE;
-
-  /* 3. PID控制并输出PWM */
+  /* 2. PID控制并输出PWM */
   for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
     int16_t pwm = Motor_PIDControl(i, g_target_speeds[i], g_control_deltas[i]);
     Motor_SetSpeed(i, pwm);
@@ -260,24 +258,34 @@ void Motor_UpdateControl(void) {
  * 索引：  0    1     2      3       4      5       6      7       8      9      10       11
  *
  * 功能：
- * - 从帧中解析4个电机的速度（大端序int16_t）
- * - 单位：centi-CPS（CPS/100）
- * - 转换为编码器增量并存储
+ * - 从帧中解析4个电机的速度（小端序int16_t）
+ * - 单位：CPS (Counts Per Second，每秒编码器脉冲数)
+ * - 转换为编码器增量（counts/控制周期）并存储
+ *
+ * 速度范围示例（500线编码器，减速比30:1，轮径20cm）：
+ * - 编码器每转总输出 = 500 × 30 = 15,000 counts/转
+ * - 轮子周长 = π × 20cm = 62.8cm
+ * - int16最大值 = 32,767 CPS
+ * - 最大转速 = 32,767 / 15,000 = 2.18 转/秒 = 130.9 RPM
+ * - 最大线速度 = 2.18 × 62.8cm = 137 cm/s = 1.37 m/s
+ *
+ * 实际应用示例：
+ * - speed = 1000 CPS → 约4.2 cm/s（低速巡检）
+ * - speed = 10000 CPS → 约42 cm/s（正常行走）
+ * - speed = 30000 CPS → 约1.26 m/s（高速运动）
  */
 void Motor_ProcessSpeedFrame(uint8_t *frame, uint16_t frame_len) {
-  /* 帧数据从索引2开始，格式：4个int16_t（大端序） */
+  /* 帧数据从索引2开始，格式：4个int16_t（小端序） */
   uint8_t *data = &frame[2];
 
   /* 解析并设置4个电机的速度 */
   for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
-    /* 大端序解析int16_t */
-    int16_t speed = (int16_t)((data[i * 2] << 8) | data[i * 2 + 1]);
+    /* 小端序解析int16_t */
+    int16_t speed = (int16_t)((data[i * 2 + 1] << 8) | data[i * 2]);
 
-    /* centi-CPS转换为编码器增量（直接转换，无需额外函数调用） */
-    if (i < MOTOR_COUNT) {
-      /* speed单位是CPS/100，转换为编码器增量，扩大一百倍防止目标速度太大无法使用两字节表示 */
-      g_target_speeds[i] = (int16_t)(speed * g_update_period_ms / 1000.f * 100.0f);
-    }
+    /* CPS转换为编码器增量（counts/控制周期） */
+    /* 例：speed=1000 CPS，周期10ms → 1000 * 10 / 1000 = 10 counts/10ms */
+    g_target_speeds[i] = (int16_t)(speed * g_update_period_ms / 1000.f);
   }
 }
 
