@@ -1,3 +1,10 @@
+# ==================== ROS2 工作空间 ====================
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+ros2_ws/src/*/build/
+ros2_ws/src/*/install/
+
 # ==================== 构建输出 ====================
 build/
 cmake/build/
@@ -26,7 +33,8 @@ makefile
 *.cmake
 !CMakeLists.txt
 !CMakePresets.json
-!cmake/*.cmake
+!firmware/cmake/*.cmake
+!firmware/cmake/stm32cubemx/*.cmake
 
 # ==================== IDE 配置 ====================
 # VSCode
