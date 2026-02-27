@@ -45,6 +45,11 @@ void MX_USART2_UART_Init(void);
 
 /* USER CODE BEGIN Prototypes */
 
+/* DMA发送辅助函数 */
+uint8_t USART2_DMA_IsBusy(void);
+void USART2_DMA_SetBusy(uint8_t busy);
+HAL_StatusTypeDef USART2_DMA_WaitForComplete(uint32_t timeout_ms);
+
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus

@@ -56,6 +56,10 @@ typedef struct {
 /* 串口发送缓冲 - 增大到128字节以支持更长的数据帧 */
 extern uint8_t UART_SEND_BUF[128];
 
+/* DMA发送缓冲 - 独立缓冲区用于DMA传输 */
+#define DMA_SEND_BUF_SIZE 128
+extern uint8_t DMA_SEND_BUF[DMA_SEND_BUF_SIZE];
+
 /* ==================== 核心接口 ==================== */
 
 /**
@@ -115,6 +119,25 @@ void Comm_SendBuf(USART_TypeDef *USART_COM, uint8_t *buf, uint16_t len);
  * - Comm_SendDataFrame(FUNC_BATTERY_VOLTAGE, &voltage, 1);  // 1个int16_t
  */
 void Comm_SendDataFrame(uint8_t func_code, int16_t *data, uint8_t data_len);
+
+/**
+ * @brief DMA方式发送协议数据帧（非阻塞）
+ * @param func_code 功能码
+ * @param data 数据指针（int16_t数组）
+ * @param data_len 数据长度（int16_t个数）
+ * @return HAL_OK=启动成功，HAL_ERROR=DMA忙碌、HAL_BUSY=上次传输未完成
+ *
+ * 功能：
+ * - 与Comm_SendDataFrame()相同的帧格式
+ * - 使用DMA传输，CPU立即返回
+ * - 适用于周期性大数据量发送（IMU、编码器等）
+ *
+ * 注意：
+ * - 如果DMA忙碌，函数立即返回HAL_BUSY
+ * - 调用者需检查返回值或使用USART2_DMA_IsBusy()检查状态
+ * - 数据在DMA传输期间必须保持有效（使用静态缓冲区）
+ */
+HAL_StatusTypeDef Comm_SendDataFrameDMA(uint8_t func_code, int16_t *data, uint8_t data_len);
 
 /**
  * @brief 串口接收中断回调

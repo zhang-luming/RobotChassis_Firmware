@@ -19,7 +19,7 @@ class PTPSync:
     MSG_REQ = 0x01
     MSG_RESP = 0x02
 
-    def __init__(self, port: str, baudrate: int = 115200):
+    def __init__(self, port: str, baudrate: int = 921600):
         self.port = port
         self.baudrate = baudrate
         self.ser: Optional[serial.Serial] = None

@@ -174,8 +174,8 @@ void Motor_ReadAndReport(void) {
     tx_data[i * 2 + 1] = (int16_t)((g_report_accum[i] >> 16) & 0xFFFF); /* 高16位 */
   }
 
-  /* 发送编码器数据（8个int16 = 4个int32） */
-  Comm_SendDataFrame(FUNC_ENCODER, tx_data, 8);
+  /* 发送编码器数据（8个int16 = 4个int32） - 使用DMA非阻塞发送 */
+  Comm_SendDataFrameDMA(FUNC_ENCODER, tx_data, 8);
 }
 
 /**

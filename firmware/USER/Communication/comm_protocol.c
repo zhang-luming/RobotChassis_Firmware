@@ -36,6 +36,9 @@ static uint8_t g_rx_byte = 0;
 /* 串口发送缓冲 */
 uint8_t UART_SEND_BUF[128];
 
+/* DMA发送缓冲 - 独立缓冲区用于DMA传输 */
+uint8_t DMA_SEND_BUF[DMA_SEND_BUF_SIZE];
+
 /* 调试：上一次打印的字节数 */
 static uint16_t g_last_printed_bytes = 0;
 
@@ -376,4 +379,65 @@ void Comm_SendDataFrame(uint8_t func_code, int16_t* data, uint8_t data_len) {
 
   /* 发送 */
   Comm_SendBuf(USART2, UART_SEND_BUF, data_idx + 2);
+}
+
+/**
+ * @brief DMA方式发送协议数据帧（非阻塞）
+ * @param func_code 功能码
+ * @param data 数据指针（int16_t数组）
+ * @param data_len 数据长度（int16_t个数）
+ * @return HAL_OK=启动成功，HAL_BUSY=上次传输未完成
+ */
+HAL_StatusTypeDef Comm_SendDataFrameDMA(uint8_t func_code, int16_t* data, uint8_t data_len) {
+  extern uint64_t Time_GetUs(void);
+  extern uint8_t USART2_DMA_IsBusy(void);
+  extern void USART2_DMA_SetBusy(uint8_t busy);
+
+  /* 检查DMA是否忙碌 */
+  if (USART2_DMA_IsBusy()) {
+    return HAL_BUSY;
+  }
+
+  /* 计算帧长度 */
+  uint8_t frame_len = 2 + (data_len * 2) + 8 + 2;  /* 帧头+功能码 + 数据 + 时间戳 + 校验+帧尾 */
+
+  /* 检查缓冲区大小 */
+  if (frame_len > DMA_SEND_BUF_SIZE) {
+    return HAL_ERROR;
+  }
+
+  /* 构建协议帧（在DMA缓冲区中） */
+  DMA_SEND_BUF[0] = PROTOCOL_HEADER;
+  DMA_SEND_BUF[1] = func_code;
+
+  /* 复制数据（int16_t转uint8_t，小端序） */
+  uint8_t data_idx = 2;
+  for (uint8_t i = 0; i < data_len; i++) {
+    int16_t value = data[i];
+    DMA_SEND_BUF[data_idx++] = value & 0xFF;          /* 低字节在前 */
+    DMA_SEND_BUF[data_idx++] = (value >> 8) & 0xFF;  /* 高字节在后 */
+  }
+
+  /* 添加发送时间戳（8字节，64位微秒时间戳，小端序） */
+  uint64_t tx_timestamp = Time_GetUs();
+  for (int i = 0; i < 8; i++) {
+    DMA_SEND_BUF[data_idx++] = (tx_timestamp >> (i * 8)) & 0xFF;
+  }
+
+  /* 计算校验和（包括时间戳） */
+  DMA_SEND_BUF[data_idx] = Comm_XORCheck(DMA_SEND_BUF, data_idx);
+  DMA_SEND_BUF[data_idx + 1] = PROTOCOL_TAIL;
+
+  /* 设置DMA忙碌标志 */
+  USART2_DMA_SetBusy(1);
+
+  /* 启动DMA发送 */
+  HAL_StatusTypeDef status = HAL_UART_Transmit_DMA(&huart2, DMA_SEND_BUF, frame_len);
+
+  /* 如果启动失败，清除忙碌标志 */
+  if (status != HAL_OK) {
+    USART2_DMA_SetBusy(0);
+  }
+
+  return status;
 }

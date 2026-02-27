@@ -196,10 +196,10 @@ static void IMU_UpdateAndPublish(void) {
 
     s_data_valid = 1;
 
-    /* ========== 4. 发送所有数据 ========== */
-    Comm_SendDataFrame(FUNC_EULER_ANGLE, s_euler_angle, 3);
-    Comm_SendDataFrame(FUNC_GYRO, s_gyro, 3);
-    Comm_SendDataFrame(FUNC_ACCEL, s_acc, 3);
+    /* ========== 4. 发送所有数据（使用DMA非阻塞发送） ========== */
+    Comm_SendDataFrameDMA(FUNC_EULER_ANGLE, s_euler_angle, 3);
+    Comm_SendDataFrameDMA(FUNC_GYRO, s_gyro, 3);
+    Comm_SendDataFrameDMA(FUNC_ACCEL, s_acc, 3);
 }
 
 /* ==================== 数据获取接口实现 ==================== */
