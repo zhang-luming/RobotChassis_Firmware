@@ -53,17 +53,21 @@ FUNC_NAMES = {
     0x08: "舵机控制",
 }
 
-# 数据长度定义（字节数）
+# 数据长度定义（字节数）- 不包括8字节时间戳
 FUNC_DATA_LENGTHS = {
-    0x01: 2,  # 电池电压: 1个int16_t
-    0x02: 8,  # 编码器: 4个int16_t
-    0x03: 6,  # 陀螺仪: 3个int16_t
-    0x04: 6,  # 加速度: 3个int16_t
-    0x05: 6,  # 欧拉角: 3个int16_t
-    0x06: 8,  # 电机速度: 4个int16_t
-    0x07: 6,  # PID参数: 3个int16_t
-    0x08: 2,  # 舵机控制: 2个int8_t
+    0x01: 2,   # 电池电压: 1个int16_t
+    0x02: 16,  # 编码器: 4个int32_t = 8个int16_t
+    0x03: 6,   # 陀螺仪: 3个int16_t
+    0x04: 6,   # 加速度: 3个int16_t
+    0x05: 6,   # 欧拉角: 3个int16_t
+    0x06: 8,   # 电机速度: 4个int16_t
+    0x07: 6,   # PID参数: 3个int16_t
+    0x08: 2,   # 舵机控制: 2个int8_t
+    0x10: 10,  # PTP时间同步: 5个int16_t (不含时间戳)
 }
+
+# 帧格式：[FC][Func][Data...][TxTimestamp(8 bytes)][Checksum][DF]
+TX_TIMESTAMP_LEN = 8  # 发送时间戳固定8字节
 
 
 # ==================== 解析函数 ====================
@@ -89,16 +93,19 @@ def parse_frame(frame: bytes) -> Optional[dict]:
     """
     解析协议帧
 
+    新帧格式：[FC][Func][Data...][TxTimestamp(8B)][Checksum][DF]
+
     返回：
         {
             'func_code': int,
             'func_name': str,
             'data': list,
+            'timestamp': int (微秒时间戳),
             'raw': bytes
         }
         或 None（解析失败）
     """
-    if len(frame) < 5:  # 最小帧长度：帧头(1) + 功能码(1) + 数据(2) + 校验(1) + 帧尾(1)
+    if len(frame) < 5:  # 最小帧长度
         return None
 
     if frame[0] != PROTOCOL_HEADER:
@@ -112,15 +119,15 @@ def parse_frame(frame: bytes) -> Optional[dict]:
         print(f"  [警告] 未知功能码: 0x{func_code:02X}")
         return None
 
-    # 数据长度 = 总帧长 - 帧头(1) - 功能码(1) - 校验(1) - 帧尾(1)
-    data_len = len(frame) - 4
+    # 数据长度 = 总帧长 - 帧头(1) - 功能码(1) - 时间戳(8) - 校验(1) - 帧尾(1)
+    data_len = len(frame) - 12
 
     # 验证数据长度
     expected_len = FUNC_DATA_LENGTHS.get(func_code)
     if expected_len is not None and data_len != expected_len:
         print(f"  [警告] 功能码0x{func_code:02X}的数据长度不匹配: 预期{expected_len}, 实际{data_len}")
 
-    # 计算并验证校验和（包括帧头、功能码和数据段）
+    # 计算并验证校验和（包括时间戳）
     checksum_data = frame[:-2]  # 排除校验位和帧尾
     calculated_checksum = calculate_xor_checksum(checksum_data)
     received_checksum = frame[-2]
@@ -128,6 +135,10 @@ def parse_frame(frame: bytes) -> Optional[dict]:
     if calculated_checksum != received_checksum:
         print(f"  [警告] 校验和错误: 计算值0x{calculated_checksum:02X}, 接收值0x{received_checksum:02X}")
         return None
+
+    # 解析8字节时间戳（小端序）
+    timestamp_bytes = frame[2+data_len:2+data_len+8]
+    timestamp = int.from_bytes(timestamp_bytes, byteorder='little')
 
     # 解析数据
     if func_code == 0x08:  # 舵机控制使用int8_t
@@ -140,6 +151,7 @@ def parse_frame(frame: bytes) -> Optional[dict]:
         'func_code': func_code,
         'func_name': FUNC_NAMES[func_code],
         'data': data,
+        'timestamp': timestamp,
         'raw': frame
     }
 
@@ -150,8 +162,18 @@ def format_data(func_code: int, data: list) -> str:
         voltage = data[0]  # mV
         return f"{voltage} mV ({voltage/1000:.2f} V)"
 
-    elif func_code == 0x02:  # 编码器
-        return f"Motor A={data[0]}, B={data[1]}, C={data[2]}, D={data[3]}"
+    elif func_code == 0x02:  # 编码器：8个int16_t组成4个int32_t
+        # 重构int32值 (小端序: 低16位在前，高16位在后)
+        def to_int32(low, high):
+            val = (high << 16) | (low & 0xFFFF)
+            if val & 0x80000000:  # 处理负数
+                val = val - 0x100000000
+            return val
+        enc_a = to_int32(data[0], data[1])
+        enc_b = to_int32(data[2], data[3])
+        enc_c = to_int32(data[4], data[5])
+        enc_d = to_int32(data[6], data[7])
+        return f"Motor A={enc_a}, B={enc_b}, C={enc_c}, D={enc_d}"
 
     elif func_code == 0x03:  # 陀螺仪 (rad/s ×100)
         return f"X={data[0]/100:.2f}, Y={data[1]/100:.2f}, Z={data[2]/100:.2f} rad/s"
@@ -180,8 +202,9 @@ def print_frame(frame_info: dict, show_raw: bool = False):
     timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
     func_name = frame_info['func_name']
     data_str = format_data(frame_info['func_code'], frame_info['data'])
+    tx_timestamp = frame_info.get('timestamp', 0)
 
-    print(f"[{timestamp}] {func_name}: {data_str}")
+    print(f"[{timestamp}] TX:{tx_timestamp}us {func_name}: {data_str}")
 
     if show_raw:
         raw_hex = ' '.join(f'{b:02X}' for b in frame_info['raw'])
@@ -193,7 +216,7 @@ def print_frame(frame_info: dict, show_raw: bool = False):
 class SerialReader:
     """串口读取器"""
 
-    def __init__(self, port: str, baudrate: int = 115200):
+    def __init__(self, port: str, baudrate: int = 921600):
         self.port = port
         self.baudrate = baudrate
         self.serial: Optional[serial.Serial] = None
@@ -296,7 +319,7 @@ def main():
 
     parser = argparse.ArgumentParser(description='机器人底盘串口数据读取器')
     parser.add_argument('-p', '--port', type=str, help='串口设备 (例如: /dev/ttyUSB0 或 COM3)')
-    parser.add_argument('-b', '--baudrate', type=int, default=115200, help='波特率 (默认: 115200)')
+    parser.add_argument('-b', '--baudrate', type=int, default=921600, help='波特率 (默认: 921600)')
     parser.add_argument('-l', '--list', action='store_true', help='列出可用串口')
     parser.add_argument('-r', '--raw', action='store_true', help='显示原始数据')
     parser.add_argument('-f', '--filter', type=str, nargs='+',

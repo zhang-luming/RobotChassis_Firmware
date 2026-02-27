@@ -45,6 +45,9 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # 添加源文件到可执行文件
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
+        # ==================== 主程序 ====================
+        USER/main.c
+
         # ==================== MPU6050 驱动 ====================
         USER/IMU/MPU6050/mpu6050.c
         USER/IMU/MPU6050/mpuiic.c

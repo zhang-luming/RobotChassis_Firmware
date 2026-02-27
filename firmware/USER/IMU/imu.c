@@ -122,29 +122,28 @@ void IMU_SetEnabled(uint8_t enable) {
  * @brief MPU INT中断处理函数
  */
 void IMU_IRQHandler(void) {
-    /* 快速退出：未启用或数据未就绪 */
+    /* 快速退出：未启用 */
     if (!s_irq_enabled) {
         return;
     }
 
-    /* 获取时间戳和计数（调试用） */
+    /* 获取时间戳和计数 */
     uint64_t current_timestamp = Time_GetUs();
     s_irq_count++;
 
 #ifdef DEBUG_ENABLE
-    /* 仅在调试模式下计算时间间隔 */
-    if (s_last_irq_timestamp_us != 0 && (s_irq_count % 100) == 0) {
+    /* 每100次中断打印一次状态 */
+    if ((s_irq_count % 100) == 0) {
         uint64_t interval = current_timestamp - s_last_irq_timestamp_us;
-        DEBUG_VERBOSE("[IMU] #%lu Ts:%llu Int:%lluus\r\n",
-                      s_irq_count, current_timestamp, interval);
+        DEBUG_INFO("[IMU] IRQ#%lu Int:%lluus\r\n", s_irq_count, interval);
     }
 #endif
     s_last_irq_timestamp_us = current_timestamp;
 
-    /* 核心操作：更新并发布IMU数据 */
+    /* 读取并上报IMU数据 */
     IMU_UpdateAndPublish();
 
-    /* 读取并上报编码器位置（与IMU数据同步） */
+    /* 读取并上报编码器位置 */
     Motor_ReadAndReport();
 }
 
