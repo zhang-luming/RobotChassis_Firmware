@@ -22,8 +22,8 @@ extern "C" {
 #define SERVO_MAX_ANGLE 180  /* 最大角度 180度 */
 
 /* ==================== 调试配置 ==================== */
-#define DEBUG_ENABLE                    /* 启用调试输出（取消注释以启用） */
-#define DEBUG_LEVEL DEBUG_LEVEL_INFO    /* 调试级别：INFO/WARN/ERROR/VERBOSE */
+#define DEBUG_ENABLE                /* 启用调试输出（取消注释以启用） */
+#define DEBUG_LEVEL DEBUG_LEVEL_INFO  /* 调试级别：INFO/WARN/ERROR/VERBOSE */
 
 /* 调试级别说明：
  * DEBUG_LEVEL_INFO     - 只输出重要信息（系统状态、错误等）

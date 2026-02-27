@@ -162,15 +162,15 @@ static void ProcessFrame(uint8_t* frame, uint16_t frame_len) {
 
   /* 根据功能码分发 */
   switch (func_code) {
-    case FUNC_MOTOR_SPEED: /* 0x06 电机目标速度 */
+    case FUNC_MOTOR_SPEED: /* 0x04 电机目标速度 */
       Motor_ProcessSpeedFrame(frame, frame_len);
       break;
 
-    case FUNC_PID_PARAM: /* 0x07 PID参数 */
+    case FUNC_PID_PARAM: /* 0x05 PID参数 */
       Motor_ProcessPIDFrame(frame, frame_len);
       break;
 
-    case FUNC_SERVO_CONTROL: /* 0x08 舵机控制 */
+    case FUNC_SERVO_CONTROL: /* 0x06 舵机控制 */
       printf("[Servo] 舵机控制 - 待实现\r\n");
       // TODO: 实现舵机控制
       break;

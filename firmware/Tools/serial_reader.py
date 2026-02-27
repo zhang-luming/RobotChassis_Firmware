@@ -17,7 +17,7 @@
 
 import sys
 import struct
-from typing import Optional, Tuple, List
+from typing import Optional, List
 from datetime import datetime
 
 # 确保导入的是 pyserial 而非标准库的 serial
@@ -41,29 +41,18 @@ if not hasattr(serial, 'Serial'):
 PROTOCOL_HEADER = 0xFC
 PROTOCOL_TAIL = 0xDF
 
-# 功能码定义
+# MCU上报数据的功能码定义
 FUNC_NAMES = {
     0x01: "电池电压",
     0x02: "编码器",
-    0x03: "陀螺仪",
-    0x04: "加速度",
-    0x05: "欧拉角",
-    0x06: "电机目标速度",
-    0x07: "PID参数",
-    0x08: "舵机控制",
+    0x03: "IMU数据",
 }
 
 # 数据长度定义（字节数）- 不包括8字节时间戳
 FUNC_DATA_LENGTHS = {
     0x01: 2,   # 电池电压: 1个int16_t
     0x02: 16,  # 编码器: 4个int32_t = 8个int16_t
-    0x03: 6,   # 陀螺仪: 3个int16_t
-    0x04: 6,   # 加速度: 3个int16_t
-    0x05: 6,   # 欧拉角: 3个int16_t
-    0x06: 8,   # 电机速度: 4个int16_t
-    0x07: 6,   # PID参数: 3个int16_t
-    0x08: 2,   # 舵机控制: 2个int8_t
-    0x10: 10,  # PTP时间同步: 5个int16_t (不含时间戳)
+    0x03: 18,  # IMU数据: 9个int16_t (欧拉角3 + 陀螺仪3 + 加速度3)
 }
 
 # 帧格式：[FC][Func][Data...][TxTimestamp(8 bytes)][Checksum][DF]
@@ -140,12 +129,9 @@ def parse_frame(frame: bytes) -> Optional[dict]:
     timestamp_bytes = frame[2+data_len:2+data_len+8]
     timestamp = int.from_bytes(timestamp_bytes, byteorder='little')
 
-    # 解析数据
-    if func_code == 0x08:  # 舵机控制使用int8_t
-        data = list(frame[2:2+data_len])
-    else:  # 其他功能码使用int16_t
-        num_values = data_len // 2
-        data = parse_int16_array(frame[2:2+data_len], num_values)
+    # 解析数据（所有功能码都使用int16_t）
+    num_values = data_len // 2
+    data = parse_int16_array(frame[2:2+data_len], num_values)
 
     return {
         'func_code': func_code,
@@ -173,42 +159,52 @@ def format_data(func_code: int, data: list) -> str:
         enc_b = to_int32(data[2], data[3])
         enc_c = to_int32(data[4], data[5])
         enc_d = to_int32(data[6], data[7])
-        return f"Motor A={enc_a}, B={enc_b}, C={enc_c}, D={enc_d}"
+        return f"A={enc_a:6d} B={enc_b:6d} C={enc_c:6d} D={enc_d:6d}"
 
-    elif func_code == 0x03:  # 陀螺仪 (rad/s ×100)
-        return f"X={data[0]/100:.2f}, Y={data[1]/100:.2f}, Z={data[2]/100:.2f} rad/s"
-
-    elif func_code == 0x04:  # 加速度 (G ×100)
-        return f"X={data[0]/100:.2f}, Y={data[1]/100:.2f}, Z={data[2]/100:.2f} G"
-
-    elif func_code == 0x05:  # 欧拉角 (度 ×100)
-        return f"Roll={data[0]/100:.2f}, Pitch={data[1]/100:.2f}, Yaw={data[2]/100:.2f}°"
-
-    elif func_code == 0x06:  # 电机目标速度
-        return f"Motor A={data[0]}, B={data[1]}, C={data[2]}, D={data[3]}"
-
-    elif func_code == 0x07:  # PID参数 (×100)
-        return f"Kp={data[0]/100:.2f}, Ki={data[1]/100:.2f}, Kd={data[2]/100:.2f}"
-
-    elif func_code == 0x08:  # 舵机控制
-        return f"Servo1={data[0]}, Servo2={data[1]}"
+    elif func_code == 0x03:  # IMU数据：欧拉角(3) + 陀螺仪(3) + 加速度(3)
+        # 数据顺序：俯仰、横滚、航向、gyro(x,y,z)、accel(x,y,z)
+        lines = []
+        lines.append(f"Euler   : Pitch={data[0]/100:7.2f}°, Roll={data[1]/100:7.2f}°, Yaw={data[2]/100:7.2f}°")
+        lines.append(f"Gyro    : X={data[3]/100:7.2f},   Y={data[4]/100:7.2f},   Z={data[5]/100:7.2f} rad/s")
+        lines.append(f"Accel   : X={data[6]/100:7.2f},   Y={data[7]/100:7.2f},   Z={data[8]/100:7.2f} G")
+        return "\n         ".join(lines)
 
     else:
         return str(data)
 
 
-def print_frame(frame_info: dict, show_raw: bool = False):
+def format_timestamp(tx_timestamp: int, first_timestamp: int) -> str:
+    """格式化时间戳为可读字符串"""
+    # 将微秒转换为毫秒浮点数，保留微秒精度
+    tx_ms = tx_timestamp / 1000.0
+    return f"TX:{tx_ms:.3f}ms"
+
+
+def print_frame(frame_info: dict, show_raw: bool = False, first_timestamp: int = 0):
     """打印帧信息"""
-    timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
     func_name = frame_info['func_name']
     data_str = format_data(frame_info['func_code'], frame_info['data'])
     tx_timestamp = frame_info.get('timestamp', 0)
 
-    print(f"[{timestamp}] TX:{tx_timestamp}us {func_name}: {data_str}")
+    ts_str = format_timestamp(tx_timestamp, first_timestamp)
+
+    # 判断是否为多行输出（IMU数据）
+    if '\n' in data_str:
+        # 多行输出：时间戳只在第一行
+        lines = data_str.split('\n')
+        print(f"[{ts_str}] {func_name}:")
+        for i, line in enumerate(lines):
+            if i == 0:
+                print(f"  {line}")
+            else:
+                print(f"  {line}")
+    else:
+        # 单行输出
+        print(f"[{ts_str}] {func_name}: {data_str}")
 
     if show_raw:
         raw_hex = ' '.join(f'{b:02X}' for b in frame_info['raw'])
-        print(f"  原始数据: {raw_hex}")
+        print(f"  原始: {raw_hex}")
 
 
 # ==================== 串口处理 ====================
@@ -278,7 +274,8 @@ class SerialReader:
 
             func_code = self.buffer[1]
             expected_data_len = FUNC_DATA_LENGTHS.get(func_code, 0)
-            expected_frame_len = 4 + expected_data_len  # 帧头 + 功能码 + 数据 + 校验 + 帧尾
+            # 帧格式：[FC][Func][Data...][TxTimestamp(8B)][Checksum][DF]
+            expected_frame_len = 4 + expected_data_len + TX_TIMESTAMP_LEN  # 包含时间戳
 
             # 检查是否收到完整帧
             if len(self.buffer) < expected_frame_len:
@@ -323,7 +320,7 @@ def main():
     parser.add_argument('-l', '--list', action='store_true', help='列出可用串口')
     parser.add_argument('-r', '--raw', action='store_true', help='显示原始数据')
     parser.add_argument('-f', '--filter', type=str, nargs='+',
-                       choices=['battery', 'encoder', 'gyro', 'accel', 'euler', 'motor', 'pid', 'servo'],
+                       choices=['battery', 'encoder', 'imu'],
                        help='只显示指定类型的数据')
 
     args = parser.parse_args()
@@ -353,12 +350,7 @@ def main():
         filter_map = {
             'battery': 0x01,
             'encoder': 0x02,
-            'gyro': 0x03,
-            'accel': 0x04,
-            'euler': 0x05,
-            'motor': 0x06,
-            'pid': 0x07,
-            'servo': 0x08,
+            'imu': 0x03,
         }
         filter_codes = set(filter_map[f] for f in args.filter)
 
@@ -371,18 +363,23 @@ def main():
 
     try:
         frame_count = 0
+        first_timestamp = 0  # 记录第一个时间戳
         while True:
             frames = reader.read_frames()
 
             for frame_info in frames:
                 frame_count += 1
 
+                # 记录第一个时间戳
+                if first_timestamp == 0:
+                    first_timestamp = frame_info.get('timestamp', 0)
+
                 # 应用过滤器
                 if filter_codes and frame_info['func_code'] not in filter_codes:
                     continue
 
                 # 打印帧信息
-                print_frame(frame_info, show_raw=args.raw)
+                print_frame(frame_info, show_raw=args.raw, first_timestamp=first_timestamp)
 
     except KeyboardInterrupt:
         print(f"\n\n总共接收 {frame_count} 帧数据")

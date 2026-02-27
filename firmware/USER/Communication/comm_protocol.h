@@ -30,12 +30,10 @@ extern "C" {
 /* 功能码定义 */
 #define FUNC_BATTERY_VOLTAGE  0x01  /* 电池电压 */
 #define FUNC_ENCODER          0x02  /* 编码器 */
-#define FUNC_GYRO             0x03  /* 陀螺仪 */
-#define FUNC_ACCEL            0x04  /* 加速度 */
-#define FUNC_EULER_ANGLE      0x05  /* 欧拉角 */
-#define FUNC_MOTOR_SPEED      0x06  /* 电机目标速度 */
-#define FUNC_PID_PARAM        0x07  /* PID参数设置 */
-#define FUNC_SERVO_CONTROL    0x08  /* 舵机控制 */
+#define FUNC_IMU              0x03  /* IMU合并数据（欧拉角+陀螺仪+加速度） */
+#define FUNC_MOTOR_SPEED      0x04  /* 电机目标速度 */
+#define FUNC_PID_PARAM        0x05  /* PID参数设置 */
+#define FUNC_SERVO_CONTROL    0x06  /* 舵机控制 */
 #define FUNC_PTP_SYNC         0x10  /* PTP时间同步 */
 
 #define RX_BUFFER_SIZE        256   /* 接收缓冲区大小 */
@@ -113,9 +111,8 @@ void Comm_SendBuf(USART_TypeDef *USART_COM, uint8_t *buf, uint16_t len);
  * - int16_t值 0x1234 → 0x12 0x34（高字节在前）
  *
  * 示例：
- * - Comm_SendDataFrame(FUNC_EULER_ANGLE, euler, 3);   // 3个int16_t
- * - Comm_SendDataFrame(FUNC_GYRO, gyro, 3);           // 3个int16_t
- * - Comm_SendDataFrame(FUNC_ENCODER, encoders, 4);    // 4个int16_t
+ * - Comm_SendDataFrame(FUNC_IMU, imu_data, 9);          // 9个int16_t (IMU合并)
+ * - Comm_SendDataFrame(FUNC_ENCODER, encoders, 8);      // 8个int16_t (编码器)
  * - Comm_SendDataFrame(FUNC_BATTERY_VOLTAGE, &voltage, 1);  // 1个int16_t
  */
 void Comm_SendDataFrame(uint8_t func_code, int16_t *data, uint8_t data_len);

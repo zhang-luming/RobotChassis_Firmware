@@ -1,7 +1,7 @@
 /**
  ******************************************************************************
  * @file    motor_control.c
- * @brief   电机控制模块 - 四路电机PID控制（分离式架构）
+ * @brief   电机控制模块 - 四路电机PID控制（统一采样点架构）
  *
  * 功能说明：
  * - 四路编码器速度读取
@@ -10,14 +10,15 @@
  * - 编码器数据上报
  * - 动态时间计算（自适应调用周期）
  *
- * 分离式架构：
- * - Motor_ReadAndReport(): 读取编码器位置并上报（100Hz，IMU中断）
- * - Motor_UpdateControl(): 执行PID控制并输出PWM（25Hz，TIM6中断）
+ * 统一采样点架构：
+ * - Motor_SampleEncoders(): 统一读取编码器（100Hz，IMU中断中调用）
+ * - Motor_ReadAndReport(): 上报编码器位置（使用采样的增量）
+ * - Motor_UpdateControl(): 执行PID控制（使用采样的增量）
+ * - Motor_Update(): 一步完成采样+上报+控制（推荐调用方式）
  *
  * 模块接口：
  * - Motor_Init(): 初始化模块
- * - Motor_ReadAndReport(): 读取并上报编码器位置（高优先级）
- * - Motor_UpdateControl(): 执行电机控制（低优先级）
+ * - Motor_Update(): 统一更新函数（采样+上报+控制）
  * - Motor_ProcessSetSpeed(): 设置目标速度
  * - Motor_ProcessSetPID(): 设置PID参数
  ******************************************************************************
@@ -35,15 +36,16 @@
 /* 目标速度（单位：CPS - Counts Per Second，编码器计数/秒） */
 static int16_t g_target_speeds[MOTOR_COUNT] = {0};
 
-/* ========== 控制模块专用变量 ========== */
-static uint16_t g_control_last[MOTOR_COUNT] = {ENCODER_MIDDLE, ENCODER_MIDDLE,
+/* ========== 统一采样点变量 ========== */
+/* 上次采样的编码器计数值 */
+static uint16_t g_sample_last[MOTOR_COUNT] = {ENCODER_MIDDLE, ENCODER_MIDDLE,
                                                 ENCODER_MIDDLE, ENCODER_MIDDLE};
-static int16_t g_control_deltas[MOTOR_COUNT] = {0};
+/* 本次采样计算的编码器增量（速度） */
+static int16_t g_sample_deltas[MOTOR_COUNT] = {0};
 
 /* ========== 上报模块专用变量 ========== */
-static uint16_t g_report_last[MOTOR_COUNT] = {ENCODER_MIDDLE, ENCODER_MIDDLE,
-                                               ENCODER_MIDDLE, ENCODER_MIDDLE};
-static int32_t g_report_accum[MOTOR_COUNT] = {0};  /* int32避免溢出，支持长时间运行 */
+/* 编码器累积位置（int32避免溢出，支持长时间运行） */
+static int32_t g_report_accum[MOTOR_COUNT] = {0};
 
 
 /* 上次调用时间戳（微秒） */
@@ -116,56 +118,80 @@ void Motor_Init(void) {
 }
 
 /**
- * @brief 读取编码器位置并上报（在IMU中断中调用）
+ * @brief 统一采样编码器（在IMU中断中调用）
  *
  * 功能：
- * - 独立读取编码器增量并累加
- * - 上报累加位置给上位机
+ * - 同时读取4路编码器的当前计数值
+ * - 计算各编码器的增量（速度）
+ * - 更新采样状态
  *
  * 优势：
- * - 100Hz实时更新
- * - 与Motor_UpdateControl()完全解耦
- * - 不受控制模块重置CNT影响
+ * - 统一采样时刻，确保数据一致性
+ * - 避免多次读取CNT导致的竞态条件
+ * - 为上报和控制提供相同的数据源
  *
  * 注意：
  * - 此函数在IMU中断（100Hz）中调用
- * - 维护独立的last和accum变量
+ * - 采样结果存储在 g_sample_deltas[] 中
+ * - 调用此函数后，Motor_ReadAndReport() 和 Motor_UpdateControl()
+ *   将使用相同的采样数据
  */
-void Motor_ReadAndReport(void) {
+void Motor_SampleEncoders(void) {
   uint16_t current_counter;
   int16_t delta;
 
+  /* ========== 统一采样4路编码器 ========== */
+
   /* 电机A - TIM2 */
   current_counter = __HAL_TIM_GET_COUNTER(&htim2);
-  delta = (int16_t)current_counter - (int16_t)g_report_last[0];
+  delta = (int16_t)current_counter - (int16_t)g_sample_last[0];
   if (delta < -32767) delta += 65536;   /* 处理向前溢出：65535→0 */
   else if (delta > 32767) delta -= 65536; /* 处理向后溢出：0→65535 */
-  g_report_accum[0] += delta;
-  g_report_last[0] = current_counter;
+  g_sample_deltas[0] = delta;
+  g_sample_last[0] = current_counter;
 
   /* 电机B - TIM3（反向） */
   current_counter = __HAL_TIM_GET_COUNTER(&htim3);
-  delta = (int16_t)current_counter - (int16_t)g_report_last[1];
+  delta = (int16_t)current_counter - (int16_t)g_sample_last[1];
   if (delta < -32767) delta += 65536;
   else if (delta > 32767) delta -= 65536;
-  g_report_accum[1] -= delta;  /* 电机B反向 */
-  g_report_last[1] = current_counter;
+  g_sample_deltas[1] = -delta;  /* 电机B反向 */
+  g_sample_last[1] = current_counter;
 
   /* 电机C - TIM4 */
   current_counter = __HAL_TIM_GET_COUNTER(&htim4);
-  delta = (int16_t)current_counter - (int16_t)g_report_last[2];
+  delta = (int16_t)current_counter - (int16_t)g_sample_last[2];
   if (delta < -32767) delta += 65536;
   else if (delta > 32767) delta -= 65536;
-  g_report_accum[2] += delta;
-  g_report_last[2] = current_counter;
+  g_sample_deltas[2] = delta;
+  g_sample_last[2] = current_counter;
 
   /* 电机D - TIM5（反向） */
   current_counter = __HAL_TIM_GET_COUNTER(&htim5);
-  delta = (int16_t)current_counter - (int16_t)g_report_last[3];
+  delta = (int16_t)current_counter - (int16_t)g_sample_last[3];
   if (delta < -32767) delta += 65536;
   else if (delta > 32767) delta -= 65536;
-  g_report_accum[3] -= delta;  /* 电机D反向 */
-  g_report_last[3] = current_counter;
+  g_sample_deltas[3] = -delta;  /* 电机D反向 */
+  g_sample_last[3] = current_counter;
+}
+
+/**
+ * @brief 读取编码器位置并上报
+ *
+ * 功能：
+ * - 使用采样的增量更新累积位置
+ * - 上报累积位置给上位机
+ *
+ * 注意：
+ * - 必须先调用 Motor_SampleEncoders()
+ * - 使用 g_sample_deltas[] 的数据
+ * - 通过DMA非阻塞发送
+ */
+void Motor_ReadAndReport(void) {
+  /* 使用采样的增量更新累积位置 */
+  for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
+    g_report_accum[i] += g_sample_deltas[i];
+  }
 
   /* 将int32拆分为2个int16发送（避免int16溢出） */
   int16_t tx_data[8];
@@ -179,74 +205,52 @@ void Motor_ReadAndReport(void) {
 }
 
 /**
- * @brief 执行电机控制（在TIM6中断中调用）
+ * @brief 执行电机控制
  *
  * 功能：
  * 1. 计算时间差（自适应调用周期）
- * 2. 读取编码器增量（用于PID控制）
- * 3. 执行PID控制并输出PWM
- *
- * 溢出处理原理：
- * - 16位计数器范围：0 ~ 65535
- * - 通过增量计算自动检测溢出边界（±32767）
- * - 不重置CNT，让硬件计数器自由运行
- * - 例：last=65000, current=100 → delta=100-65000=-64900 < -32767 → delta+=65536=636 ✓
- *
- * 优势：
- * - 与Motor_ReadAndReport()完全解耦，无模块冲突
- * - 维护独立的control_last变量
- * - 不重置CNT，避免干扰上报模块
+ * 2. 使用采样的增量执行PID控制
+ * 3. 输出PWM
  *
  * 注意：
- * - 此函数在TIM6中断（100Hz）中调用
- * - 只读取增量并执行PID，不维护累加器
+ * - 必须先调用 Motor_SampleEncoders()
+ * - 使用 g_sample_deltas[] 的数据
  */
 void Motor_UpdateControl(void) {
-  uint16_t current_counter;
   uint64_t current_time_us = Time_GetUs();
   uint64_t elapsed_us = current_time_us - g_last_update_time_us;
 
   g_last_update_time_us = current_time_us;
   g_update_period_ms = elapsed_us / 1000.0f;
 
-  /* 1. 读取编码器增量（用于PID控制） */
-  /* 电机A - TIM2 */
-  current_counter = __HAL_TIM_GET_COUNTER(&htim2);
-  int16_t delta0 = (int16_t)current_counter - (int16_t)g_control_last[0];
-  if (delta0 < -32767) delta0 += 65536;   /* 处理向前溢出：65535→0 */
-  else if (delta0 > 32767) delta0 -= 65536; /* 处理向后溢出：0→65535 */
-  g_control_deltas[0] = delta0;
-  g_control_last[0] = current_counter;  /* 更新last，不重置CNT */
-
-  /* 电机B - TIM3 */
-  current_counter = __HAL_TIM_GET_COUNTER(&htim3);
-  int16_t delta1 = (int16_t)current_counter - (int16_t)g_control_last[1];
-  if (delta1 < -32767) delta1 += 65536;
-  else if (delta1 > 32767) delta1 -= 65536;
-  g_control_deltas[1] = -delta1;  /* 电机B反向 */
-  g_control_last[1] = current_counter;
-
-  /* 电机C - TIM4 */
-  current_counter = __HAL_TIM_GET_COUNTER(&htim4);
-  int16_t delta2 = (int16_t)current_counter - (int16_t)g_control_last[2];
-  if (delta2 < -32767) delta2 += 65536;
-  else if (delta2 > 32767) delta2 -= 65536;
-  g_control_deltas[2] = delta2;
-  g_control_last[2] = current_counter;
-
-  /* 电机D - TIM5 */
-  current_counter = __HAL_TIM_GET_COUNTER(&htim5);
-  int16_t delta3 = (int16_t)current_counter - (int16_t)g_control_last[3];
-  if (delta3 < -32767) delta3 += 65536;
-  else if (delta3 > 32767) delta3 -= 65536;
-  g_control_deltas[3] = -delta3;  /* 电机D反向 */
-  g_control_last[3] = current_counter;
-
-  /* 2. PID控制并输出PWM */
+  /* 使用采样的增量执行PID控制 */
   for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
-    int16_t pwm = Motor_PIDControl(i, g_target_speeds[i], g_control_deltas[i]);
+    int16_t pwm = Motor_PIDControl(i, g_target_speeds[i], g_sample_deltas[i]);
     Motor_SetSpeed(i, pwm);
   }
+}
+
+/**
+ * @brief 统一更新函数（推荐使用）
+ *
+ * 功能：
+ * - 采样编码器
+ * - 上报编码器位置
+ * - 执行PID控制
+ *
+ * 优势：
+ * - 一次采样，数据完全一致
+ * - 简化调用代码
+ * - 避免竞态条件
+ *
+ * 注意：
+ * - 此函数在IMU中断（100Hz）中调用
+ * - 替代分别调用 SampleEncoders + ReadAndReport + UpdateControl
+ */
+void Motor_Update(void) {
+  Motor_SampleEncoders();    /* 1. 统一采样编码器 */
+  Motor_ReadAndReport();     /* 2. 上报编码器位置 */
+  Motor_UpdateControl();     /* 3. 执行PID控制 */
 }
 
 /**

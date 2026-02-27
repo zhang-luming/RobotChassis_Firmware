@@ -1,3 +1,16 @@
+/**
+ ******************************************************************************
+ * @file    motor_control.h
+ * @brief   电机控制模块 - 四路电机PID控制（统一采样点架构）
+ *
+ * 统一采样点架构：
+ * - Motor_Update(): 统一更新函数（采样+上报+控制）
+ * - Motor_SampleEncoders(): 采样编码器
+ * - Motor_ReadAndReport(): 上报编码器位置
+ * - Motor_UpdateControl(): 执行PID控制
+ ******************************************************************************
+ */
+
 #ifndef __MOTOR_CONTROL_H
 #define __MOTOR_CONTROL_H
 
@@ -23,16 +36,46 @@ extern "C" {
 void Motor_Init(void);
 
 /**
- * @brief 读取编码器位置并上报（在IMU中断中调用）
+ * @brief 统一更新函数（推荐使用）
  *
  * 功能：
- * - 读取4路编码器的当前累加位置
- * - 通过串口上报给上位机
+ * - 采样编码器
+ * - 上报编码器位置
+ * - 执行PID控制
+ *
+ * 优势：
+ * - 一次采样，数据完全一致
+ * - 简化调用代码
+ * - 避免竞态条件
  *
  * 注意：
  * - 此函数在IMU中断（100Hz）中调用
- * - 与IMU数据保持时间同步
- * - 只读取和上报，不执行任何控制逻辑
+ */
+void Motor_Update(void);
+
+/**
+ * @brief 统一采样编码器
+ *
+ * 功能：
+ * - 同时读取4路编码器的当前计数值
+ * - 计算各编码器的增量（速度）
+ *
+ * 注意：
+ * - 此函数在IMU中断（100Hz）中调用
+ * - 采样结果存储在 g_sample_deltas[] 中
+ */
+void Motor_SampleEncoders(void);
+
+/**
+ * @brief 读取编码器位置并上报
+ *
+ * 功能：
+ * - 使用采样的增量更新累积位置
+ * - 上报累积位置给上位机
+ *
+ * 注意：
+ * - 必须先调用 Motor_SampleEncoders()
+ * - 使用 DMA 非阻塞发送
  */
 void Motor_ReadAndReport(void);
 
@@ -41,10 +84,11 @@ void Motor_ReadAndReport(void);
  *
  * 功能：
  * - 计算时间差（自适应调用周期）
- * - 读取编码器增量（用于PID）
- * - 执行PID控制
+ * - 使用采样的增量执行PID控制
  * - 输出PWM
  *
+ * 注意：
+ * - 必须先调用 Motor_SampleEncoders()
  */
 void Motor_UpdateControl(void);
 
@@ -56,14 +100,12 @@ void Motor_UpdateControl(void);
  * @param frame_len 帧长度
  *
  * 帧格式：[FC][0x06][速度A高][速度A低][速度B高][速度B低][速度C高][速度C低][速度D高][速度D低][Checksum][DF]
- * 索引：   0    1      2        3       4        5       6        7       8       9       10      11
- * 11
+ * 索引：   0    1      2        3       4      5       6      7       8      9      10       11
  *
  * 功能：
  * - 从帧中解析4个电机的速度（小端序int16_t）
  * - 单位：CPS (Counts Per Second，每秒编码器脉冲数)
  * - 转换为编码器增量（counts/控制周期）并存储
- *
  */
 void Motor_ProcessSpeedFrame(uint8_t *frame, uint16_t frame_len);
 
@@ -73,10 +115,6 @@ void Motor_ProcessSpeedFrame(uint8_t *frame, uint16_t frame_len);
  * @param frame_len 帧长度
  *
  * 帧格式：[FC][0x07][Kp高][Kp低][Ki高][Ki低][Kd高][Kd低][Checksum][DF]
- *
- * 功能：
- * - 从通信帧中解析PID参数
- * - 为所有4个电机设置相同的PID参数
  */
 void Motor_ProcessPIDFrame(uint8_t *frame, uint16_t frame_len);
 
