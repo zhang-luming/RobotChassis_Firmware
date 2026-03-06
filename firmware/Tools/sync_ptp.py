@@ -1,61 +1,102 @@
 #!/usr/bin/env python3
 """
-PTP-like Time Sync Debug Script
-- 打印 t1 / t2 / t3 / t4
-- 仅用于观测原始时间戳，不做控制
+PTP时间同步测试脚本
+
+基于MCU简化后的PTP实现：
+- 请求帧（PC→MCU）：[0xFC][0x10][0x01][checksum][0xDF] (5B)
+- 响应帧（MCU→PC）：[0xFC][0x10][t2(8B)][t3(8B)][checksum][0xDF] (20B)
+
+时间戳说明：
+- t1: PC发送PTP请求的时刻
+- t2: MCU接收PTP请求完成的时刻
+- t3: MCU发送PTP响应开始的时刻
+- t4: PC接收PTP响应完成的时刻
+
+计算公式：
+- offset = ((t2_unix - t1) - (t4 - t3_unix)) / 2
+- delay = ((t4 - t1) + (t3_unix - t2_unix)) / 2
+- Δt_MCU = t3 - t2 (MCU内部处理时间)
+- Δt_Linux = t4 - t1 (整体往返时间)
 """
 
 import serial
 import serial.tools.list_ports
 import time
 import sys
+import argparse
+import statistics
 from typing import Optional, Tuple
 
 
 class PTPSync:
+    """PTP时间同步类"""
+
+    # 协议常量
     PROTOCOL_HEADER = 0xFC
     PROTOCOL_TAIL = 0xDF
     FUNC_CODE = 0x10
-    MSG_REQ = 0x01
-    MSG_RESP = 0x02
+    MSG_REQUEST = 0x01
 
-    def __init__(self, port: str, baudrate: int = 921600):
+    # PTP帧大小
+    REQUEST_FRAME_SIZE = 5
+    RESPONSE_FRAME_SIZE = 20
+
+    def __init__(self, port: str, baudrate: int = 115200):
         self.port = port
         self.baudrate = baudrate
         self.ser: Optional[serial.Serial] = None
-        self.seq = 0
 
         # 时域映射参数
-        self.g_offset = None  # MCU_time → Linux_time 的转换偏移
-        self.filtered_offset = None  # 滤波后的PTP offset
-        self.last_t2 = 0
+        self.g_offset: Optional[int] = None  # MCU时间 → Linux时间的偏移（微秒）
+        self.filtered_offset: Optional[float] = None  # EMA滤波后的offset
+
+        # 时间戳记录（用于异常检测）
         self.last_t1 = 0
+        self.last_t2 = 0
 
-        # 滤波参数
-        self.filter_alpha = 0.3  # EMA滤波系数（提高到0.3加快收敛）
-        self.convergence_threshold = 1000  # 偏差超过此值视为失去收敛（us）
+        # 精确频率控制
+        self.next_sync_time: Optional[int] = None  # 下次同步的时间点（微秒）
 
-        # PI控制器参数（用于快速收敛）
+        # PI控制器参数
         self.kp = 0.5  # 比例系数
         self.ki = 0.01  # 积分系数
         self.integral = 0  # 积分累积
 
-        # offset统计（用于收敛分析）
-        self.offset_history = []  # 保存最近的offset值（仅收敛后）
-        self.consecutive_valid = 0  # 连续有效的同步次数
-        self.sync_count = 0  # 同步计数器
-        self.is_converged = False  # 是否已经达到收敛状态
+        # 滤波参数
+        self.filter_alpha = 0.3  # EMA滤波系数
+        self.convergence_threshold = 1000  # 收敛阈值（微秒）
+        self.valid_threshold = 500  # 有效样本阈值（微秒）
 
-    def connect(self):
-        self.ser = serial.Serial(self.port, self.baudrate, timeout=1.0)
-        print(f"[INFO] Connected to {self.port}")
+        # 统计数据
+        self.offset_history: list[float] = []  # 收敛后的offset历史
+        self.sync_count = 0  # 同步次数
+        self.consecutive_valid = 0  # 连续有效同步次数
+        self.is_converged = False  # 是否已收敛
+
+    def connect(self) -> bool:
+        """连接串口"""
+        try:
+            self.ser = serial.Serial(
+                self.port,
+                self.baudrate,
+                timeout=0.5,
+                write_timeout=0.5
+            )
+            print(f"[连接] 已连接到 {self.port} ({self.baudrate} baud)")
+            return True
+        except serial.SerialException as e:
+            print(f"[错误] 连接失败: {e}")
+            return False
 
     def close(self):
-        if self.ser:
+        """关闭串口"""
+        if self.ser and self.ser.is_open:
             self.ser.close()
+            print("[信息] 已断开连接")
 
     @staticmethod
     def checksum(data: bytes) -> int:
+        """计算XOR校验和"""
         c = 0
         for b in data:
             c ^= b
@@ -63,310 +104,403 @@ class PTPSync:
 
     @staticmethod
     def now_us() -> int:
-        """获取微秒级时间戳（使用纳秒级精度）"""
+        """获取当前时间（微秒）"""
         return time.time_ns() // 1000
 
-    def send_request(self):
+    def send_request_and_get_t1(self) -> Tuple[bool, int]:
+        """
+        发送PTP同步请求并记录t1（发送完成时刻）
+        返回: (成功标志, t1时间戳)
+        """
         frame = bytes([
             self.PROTOCOL_HEADER,
             self.FUNC_CODE,
-            self.MSG_REQ,
-            self.seq & 0xFF
+            self.MSG_REQUEST
         ])
+        # MCU端校验和包括帧头，从frame[0]开始
         cs = self.checksum(frame)
-        self.ser.write(frame + bytes([cs, self.PROTOCOL_TAIL]))
+        full_frame = frame + bytes([cs, self.PROTOCOL_TAIL])
 
-    def recv_response(self, timeout=1.0) -> Optional[Tuple[int, int, int]]:
+        try:
+            self.ser.write(full_frame)
+            self.ser.flush()
+            # 发送完成后立即记录t1（最接近实际发送时刻）
+            t1 = self.now_us()
+            return True, t1
+        except serial.SerialException as e:
+            print(f"[错误] 发送失败: {e}")
+            return False, 0
+
+    def recv_response(self, timeout: float = 0.1) -> Optional[Tuple[int, int, int]]:
+        """
+        接收PTP响应帧
+        返回: (t2, t3, t4) 或 None
+              t4是接收完成时刻（检测到帧尾后立即记录）
+        """
         start = time.time()
         buf = bytearray()
+        t4 = None
 
-        # 帧格式：[FC][Func][Data(10 bytes)][TxTimestamp(8 bytes)][Checksum][DF]
-        # 总共20字节（不含帧头帧尾），所有数据小端序
         while time.time() - start < timeout:
+            # 读取可用数据
             if self.ser.in_waiting:
-                buf.extend(self.ser.read(self.ser.in_waiting))
+                new_data = self.ser.read(self.ser.in_waiting)
+                # 检查新数据中是否包含帧尾，如果包含则立即记录t4
+                if self.PROTOCOL_TAIL in new_data:
+                    t4 = self.now_us()
+                buf.extend(new_data)
 
-                while len(buf) >= 22:
-                    if buf[0] != self.PROTOCOL_HEADER:
-                        buf.pop(0)
-                        continue
+            # 尝试解析完整帧
+            while len(buf) >= self.RESPONSE_FRAME_SIZE:
+                # 查找帧头
+                if buf[0] != self.PROTOCOL_HEADER:
+                    buf.pop(0)
+                    continue
 
-                    if self.PROTOCOL_TAIL not in buf:
-                        break
+                # 检查帧尾
+                if buf[self.RESPONSE_FRAME_SIZE - 1] != self.PROTOCOL_TAIL:
+                    buf.pop(0)
+                    continue
 
-                    tail = buf.index(self.PROTOCOL_TAIL)
-                    frame = bytes(buf[1:tail])
-                    buf = buf[tail + 1:]
+                # 提取完整帧
+                frame = bytes(buf[:self.RESPONSE_FRAME_SIZE])
+                buf = buf[self.RESPONSE_FRAME_SIZE:]
 
-                    if len(frame) < 20:
-                        continue
+                # 如果还没记录t4（应该已经记录了），使用当前时间
+                if t4 is None:
+                    t4 = self.now_us()
 
-                    cs_recv = frame[-1]
-                    cs_calc = self.checksum(bytes([self.PROTOCOL_HEADER]) + frame[:-1])
-                    if cs_recv != cs_calc:
-                        continue
+                # 校验验证（MCU端校验和包括帧头，从frame[0]开始到frame[17]）
+                cs_recv = frame[18]
+                cs_calc = self.checksum(frame[0:18])  # 包括帧头
+                if cs_recv != cs_calc:
+                    print(f"[警告] 校验失败: 计算值=0x{cs_calc:02X}, 接收值=0x{cs_recv:02X}")
+                    t4 = None  # 重置t4
+                    continue
 
-                    if frame[0] != self.FUNC_CODE:
-                        continue
+                # 检查功能码
+                if frame[1] != self.FUNC_CODE:
+                    t4 = None  # 重置t4
+                    continue
 
-                    # 解析 data0 (int16_t小端序)
-                    data0 = frame[1] | (frame[2] << 8)
-                    msg = data0 & 0xFF
-                    if msg != self.MSG_RESP:
-                        continue
+                # 解析t2（data[0-3]，4个int16_t小端序组成64位）
+                t2_parts = []
+                for i in range(4):
+                    idx = 2 + i * 2
+                    part = int.from_bytes(frame[idx:idx+2], byteorder='little', signed=False)
+                    t2_parts.append(part)
+                t2 = (t2_parts[3] << 48) | (t2_parts[2] << 32) | (t2_parts[1] << 16) | t2_parts[0]
 
-                    def parse_u64_from_i16_le(idx):
-                        """从4个int16_t（小端序）解析64位值"""
-                        part0 = frame[idx] | (frame[idx + 1] << 8)      # [15:0]
-                        part1 = frame[idx + 2] | (frame[idx + 3] << 8)  # [31:16]
-                        part2 = frame[idx + 4] | (frame[idx + 5] << 8)  # [47:32]
-                        part3 = frame[idx + 6] | (frame[idx + 7] << 8)  # [63:48]
-                        return (part3 << 48) | (part2 << 32) | (part1 << 16) | part0
+                # 解析t3（tx_timestamp，8字节小端序）
+                t3 = int.from_bytes(frame[10:18], byteorder='little', signed=False)
 
-                    def parse_u64_le(idx):
-                        """解析64位小端序值"""
-                        result = 0
-                        for i in range(8):
-                            result |= frame[idx + i] << (i * 8)
-                        return result
-
-                    # frame[3-10]: t2 (8字节，4个int16_t小端序)
-                    # frame[11-18]: tx_timestamp (t3, 8字节，小端序)
-                    t2 = parse_u64_from_i16_le(3)
-                    t3 = parse_u64_le(11)
-                    return data0 >> 8, t2, t3
+                return t2, t3, t4
 
         return None
 
-    def sync_once(self):
-        self.seq += 1
-
+    def sync_once(self) -> bool:
+        """执行一次PTP同步"""
         # 发送请求并记录t1（发送完成时刻）
-        self.send_request()
-        t1 = self.now_us()
+        success, t1 = self.send_request_and_get_t1()
+        if not success:
+            return False
 
-        # 接收响应并记录t4（接收完成时刻）
+        # 接收响应（返回t2, t3, t4，其中t4是接收完成时刻）
         resp = self.recv_response()
-        t4 = self.now_us()
 
         if not resp:
-            print("[警告] 超时无响应")
-            # Timeout时不要更新任何状态，直接返回
-            return
+            print(f"[警告] 同步#{self.sync_count+1} 超时无响应")
+            # 超时不更新状态，避免积分累积误差
+            return False
 
-        _, t2_mcu, t3_mcu = resp
+        t2_mcu, t3_mcu, t4 = resp
 
-        # 检测时间戳异常（MCU时间戳突然大幅减小，可能是回滚）
-        if self.sync_count > 0 and t2_mcu < self.last_t2 and (self.last_t2 - t2_mcu) > 100000:
-            print(f"[警告] MCU时间戳回滚: {self.last_t2} -> {t2_mcu}")
-            self.last_t2 = t2_mcu
-            return
-
-        # 检测异常的时间跳跃（比如timeout导致的）
+        # ===== 异常检测 =====
         if self.sync_count > 0:
-            delta_t2 = t2_mcu - self.last_t2
             delta_t1 = t1 - self.last_t1
-            # 如果时间间隔异常（>1秒），说明中间有timeout或丢包
-            if delta_t1 > 5000000 or delta_t2 > 5000000:
-                print(f"[警告] 异常时间间隔: Δt1={delta_t1/1000:.1f}ms, Δt2={delta_t2/1000:.1f}ms，跳过本次")
-                # 跳过本次，但更新last_t1和last_t2以便下次正常计算
+            delta_t2 = t2_mcu - self.last_t2
+
+            # 检测时间间隔异常（可能是丢包导致的长时间间隔）
+            # 预期间隔约500ms (500000us)，允许±50ms误差
+            if abs(delta_t1 - 500000) > 50000 or abs(delta_t2 - 500000) > 50000:
+                print(f"[警告] 异常时间间隔: Δt1={delta_t1/1000:.1f}ms, Δt2={delta_t2/1000:.1f}ms")
+                # 重置PI控制器，防止累积误差
+                self.integral = 0
                 self.last_t1 = t1
                 self.last_t2 = t2_mcu
-                # 重置积分项，防止累积误差
-                self.integral = 0
-                # 注意：不重置consecutive_valid，因为超时不代表失去收敛
                 self.sync_count += 1
-                return
+                return False
 
         # ===== 首次同步：建立时域映射 =====
         if self.g_offset is None:
-            # 初始化时域偏移（将MCU时间映射到Linux时间域）
             self.g_offset = t1 - t2_mcu
-            self.filtered_offset = 0
             self.integral = 0
+            self.filtered_offset = 0.0
 
-            # 将时间戳转换为可读格式
-            linux_time_struct = time.gmtime(t1 / 1e6)
-            print(f"[INIT] 时域映射建立")
-            print(f"       g_offset = {self.g_offset} us")
-            print(f"       Linux时间: {time.strftime('%Y-%m-%d %H:%M:%S', linux_time_struct)}.{t1 % 1000000:06d} UTC")
-            print(f"       MCU运行时间: {t2_mcu/1e6:.3f} 秒")
+            # 转换为可读时间
+            linux_time = time.gmtime(t1 / 1e6)
+            time_str = time.strftime('%Y-%m-%d %H:%M:%S', linux_time)
+            print(f"[初始化] 时域映射建立")
+            print(f"         g_offset = {self.g_offset} us")
+            print(f"         Linux时间: {time_str}.{t1 % 1000000:06d} UTC")
+            print(f"         MCU运行时间: {t2_mcu/1e6:.3f} 秒")
             print()
 
         # ===== 将MCU时间转换到Linux时间域 =====
         t2_unix = t2_mcu + self.g_offset
         t3_unix = t3_mcu + self.g_offset
 
-        # ===== 计算标准PTP offset和delay =====
-        # offset_ptp: 正值=MCU快，负值=MCU慢（反映网络延迟不对称性）
+        # ===== 计算PTP offset和delay =====
+        # offset: 时间偏移，正值=MCU快，负值=MCU慢
+        offset = ((t2_unix - t1) - (t4 - t3_unix)) / 2.0
         # delay: 网络往返延迟
-        offset_ptp = ((t2_unix - t1) - (t4 - t3_unix)) / 2
-        delay = ((t4 - t1) + (t3_unix - t2_unix)) / 2
+        delay = ((t4 - t1) + (t3_unix - t2_unix)) / 2.0
 
-        # # 检测异常的offset值（可能由timeout导致的）
-        # if abs(offset_ptp) > 5000:
-        #     print(f"[警告] 异常偏差值: {offset_ptp:.1f} us，跳过本次")
-        #     # 更新last_t1和last_t2
-        #     self.last_t1 = t1
-        #     self.last_t2 = t2_mcu
-        #     return
+        # 检测异常offset
+        if abs(offset) > 5000:
+            print(f"[警告] 异常偏差值: {offset:+.1f} us，跳过本次")
+            self.last_t1 = t1
+            self.last_t2 = t2_mcu
+            self.sync_count += 1
+            return False
 
-        # ===== 使用PI控制器让offset快速收敛 =====
-        # P项：比例控制（直接响应当前误差）
-        p_term = offset_ptp * self.kp
-
-        # I项：积分控制（消除累积误差）
-        self.integral += offset_ptp
-        # 限制积分项，防止饱和
+        # ===== PI控制器 =====
+        p_term = offset * self.kp
+        self.integral += offset
+        # 限幅
         self.integral = max(min(self.integral, 10000), -10000)
         i_term = self.integral * self.ki
 
-        # 总控制输出
         correction = p_term + i_term
-
-        # 限制单次调整幅度（防止过度补偿）
+        # 限幅
         correction = max(min(correction, 500), -500)
 
-        # 更新 g_offset（如果offset为正，说明MCU快，需要减小g_offset）
-        self.g_offset -= correction
+        # 更新g_offset
+        self.g_offset -= int(correction)
 
-        # ===== 同时使用EMA滤波显示offset趋势 =====
+        # ===== EMA滤波 =====
         if self.filtered_offset is None:
-            self.filtered_offset = offset_ptp
+            self.filtered_offset = offset
         else:
-            self.filtered_offset = (self.filter_alpha * offset_ptp +
+            self.filtered_offset = (self.filter_alpha * offset +
                                    (1 - self.filter_alpha) * self.filtered_offset)
 
-        # ===== 计算时钟速度比 =====
+        # ===== 计算时钟偏差 =====
         clock_ratio = None
         ppm_error = None
-        delta_t2_out = 0
-        delta_t1_out = 0
         if self.sync_count > 0:
             delta_t2_calc = t2_mcu - self.last_t2
             delta_t1_calc = t1 - self.last_t1
             if delta_t1_calc > 0:
                 clock_ratio = delta_t2_calc / delta_t1_calc
                 ppm_error = (clock_ratio - 1.0) * 1e6
-                delta_t2_out = delta_t2_calc
-                delta_t1_out = delta_t1_calc
 
-        # ===== 记录offset用于统计分析 =====
-        # 只在收敛后才记录offset，避免初始大偏差影响统计
-        is_valid = abs(offset_ptp) < 500
+        # ===== 计算时间间隔（用于日志） =====
+        dt_mcu = t3_mcu - t2_mcu  # MCU处理时间 (t3 - t2)
+        dt_linux = t4 - t1  # 整体往返时间 (t4 - t1)
+
+        # ===== 统计 =====
+        is_valid = abs(offset) < self.valid_threshold
 
         if is_valid:
             if not self.is_converged:
-                # 首次达到收敛
                 self.is_converged = True
-                print(f"[信息] 已达到收敛状态，开始统计数据")
+                print("[收敛] 已达到收敛状态，开始统计数据\n")
 
-            self.offset_history.append(offset_ptp)
-            if len(self.offset_history) > 1000:  # 只保留最近1000次
+            self.offset_history.append(offset)
+            if len(self.offset_history) > 1000:
                 self.offset_history.pop(0)
 
-        # ===== 判断是否收敛 =====
-        # 连续收敛计数只受实际偏差影响，不受超时影响
+        # 更新收敛状态
         if is_valid:
             self.consecutive_valid += 1
-        else:
-            # 只有偏差超过阈值才重置连续收敛计数
-            # 这样可以容忍偶尔的异常值，保持收敛状态的连续性
-            if abs(offset_ptp) > self.convergence_threshold:
-                self.consecutive_valid = 0
+        elif abs(offset) > self.convergence_threshold:
+            self.consecutive_valid = 0
 
-        # ===== 更新历史记录和计数 =====
+        # 更新历史记录
         self.last_t1 = t1
         self.last_t2 = t2_mcu
         self.sync_count += 1
 
-        # ===== 打印结果（使用中文）=====
-        status_icon = "✓" if abs(offset_ptp) < 500 else "!"
-        print(f"#{self.sync_count:3d} {status_icon} 往返延迟={delay:+7.1f} us | "
-              f"偏差={offset_ptp:+8.1f} us | 修正值={correction:+8.1f} us")
+        # ===== 打印结果 =====
+        status_icon = "✓" if is_valid else "!"
+        print(f"#{self.sync_count:3d} {status_icon} "
+              f"往返延迟={delay:+7.1f} us | "
+              f"偏差={offset:+8.1f} us | "
+              f"修正={correction:+8.1f} us")
+        print(f"      Δt_MCU={dt_mcu:7d} us (t3-t2) | "
+              f"Δt_Linux={dt_linux:7d} us (t4-t1)")
+
         if clock_ratio is not None:
-            print(f"      Δt_MCU={delta_t2_out:7d} us | Δt_Linux={delta_t1_out:7d} us | "
-                  f"时钟比={clock_ratio:+.6f} ({ppm_error:+.0f} ppm)")
+            print(f"      时钟比={clock_ratio:+.6f} ({ppm_error:+.0f} ppm)")
+
         if self.consecutive_valid > 10:
-            print(f"      时域偏移={self.g_offset} us | 已连续收敛 {self.consecutive_valid} 次")
+            print(f"      时域偏移={self.g_offset} us | 连续收敛 {self.consecutive_valid} 次")
         else:
             print(f"      时域偏移={self.g_offset} us")
+
         print("-" * 80)
 
-    def run(self, interval=0.5):
-        """持续运行PTP同步，直到用户按Ctrl+C停止"""
+        return True
+
+    def busy_wait_until(self, target_time_us: int):
+        """
+        忙等待直到达到目标时间点（微秒精度）
+        使用单调时钟确保精度
+        """
+        while self.now_us() < target_time_us:
+            # 短暂让出CPU（避免100%占用，但保持高精度）
+            pass
+
+    def run(self, interval: float = 0.5):
+        """
+        持续运行PTP同步（精确频率控制）
+        使用单调时钟和忙等待确保精确的时间间隔
+        """
+        interval_us = int(interval * 1_000_000)  # 转换为微秒
+        print(f"\n开始PTP时间同步（间隔={interval}s，精确频率控制）\n")
+        print("=" * 80)
+
+        # 设置首次同步时间（立即开始）
+        self.next_sync_time = self.now_us()
+
         try:
             while True:
+                # 执行同步
                 self.sync_once()
-                time.sleep(interval)
-        except KeyboardInterrupt:
-            print("\n")
-            print("=" * 80)
-            print("PTP时间同步统计报告")
-            print("=" * 80)
-            print(f"总同步次数: {self.sync_count}")
-            print(f"连续收敛次数: {self.consecutive_valid}")
-            print(f"最终时域偏移(g_offset): {self.g_offset} us")
-            print()
 
-            # 计算offset统计
-            if len(self.offset_history) > 10:
-                offsets = self.offset_history
-                import statistics
+                # 计算下次同步时间点
+                self.next_sync_time += interval_us
 
-                print("偏差(offset)统计:")
-                print(f"  样本数: {len(offsets)} (仅统计收敛后的数据)")
-                print(f"  最大值: {max(offsets):+.1f} us")
-                print(f"  最小值: {min(offsets):+.1f} us")
-                print(f"  平均值: {statistics.mean(offsets):+.1f} us")
-                print(f"  中位数: {statistics.median(offsets):+.1f} us")
-                if len(offsets) > 1:
-                    print(f"  标准差: {statistics.stdev(offsets):+.1f} us")
-
-                # 计算在±100us、±500us内的比例
-                within_100 = sum(1 for o in offsets if abs(o) <= 100) / len(offsets) * 100
-                within_500 = sum(1 for o in offsets if abs(o) <= 500) / len(offsets) * 100
-                print()
-                print("收敛情况:")
-                print(f"  偏差 ≤ ±100 us: {within_100:.1f}%")
-                print(f"  偏差 ≤ ±500 us: {within_500:.1f}%")
-
-                # 判断是否达到良好同步
-                if within_500 > 95:
-                    print()
-                    print("✓ 同步状态: 优秀 (95%以上偏差在±500us内)")
-                elif within_500 > 80:
-                    print()
-                    print("△ 同步状态: 良好 (80%以上偏差在±500us内)")
+                # 精确等待到下次同步时间点
+                current_time = self.now_us()
+                if current_time < self.next_sync_time:
+                    self.busy_wait_until(self.next_sync_time)
                 else:
-                    print()
-                    print("✗ 同步状态: 需要改进")
+                    # 如果同步耗时超过了间隔，立即开始下一次
+                    # 并重新计算时间基准，避免累积误差
+                    self.next_sync_time = self.now_us()
+
+        except KeyboardInterrupt:
+            self.print_statistics()
+
+    def print_statistics(self):
+        """打印统计报告"""
+        print("\n")
+        print("=" * 80)
+        print("PTP时间同步统计报告")
+        print("=" * 80)
+        print(f"总同步次数: {self.sync_count}")
+        print(f"连续收敛次数: {self.consecutive_valid}")
+        print(f"最终时域偏移(g_offset): {self.g_offset} us")
+        print()
+
+        if len(self.offset_history) > 10:
+            offsets = self.offset_history
+
+            print("偏差(offset)统计:")
+            print(f"  样本数: {len(offsets)} (仅收敛后的有效数据)")
+            print(f"  最大值: {max(offsets):+.1f} us")
+            print(f"  最小值: {min(offsets):+.1f} us")
+            print(f"  平均值: {statistics.mean(offsets):+.1f} us")
+            print(f"  中位数: {statistics.median(offsets):+.1f} us")
+            if len(offsets) > 1:
+                print(f"  标准差: {statistics.stdev(offsets):+.1f} us")
+
+            # 收敛情况
+            within_100 = sum(1 for o in offsets if abs(o) <= 100) / len(offsets) * 100
+            within_500 = sum(1 for o in offsets if abs(o) <= 500) / len(offsets) * 100
+
+            print()
+            print("收敛情况:")
+            print(f"  偏差 ≤ ±100 us: {within_100:.1f}%")
+            print(f"  偏差 ≤ ±500 us: {within_500:.1f}%")
+
+            # 评估同步质量
+            if within_500 > 95:
+                print()
+                print("✓ 同步状态: 优秀 (95%以上偏差在±500us内)")
+            elif within_500 > 80:
+                print()
+                print("△ 同步状态: 良好 (80%以上偏差在±500us内)")
             else:
-                print("[提示] 收敛数据不足，无法进行统计（需要至少10次有效同步）")
-            print("=" * 80)
+                print()
+                print("✗ 同步状态: 需要改进")
+        else:
+            print("[提示] 收敛数据不足，无法进行统计（需要至少10次有效同步）")
+
+        print("=" * 80)
 
 
-def list_ports():
-    for p in serial.tools.list_ports.comports():
-        print(f"  {p.device}: {p.description}")
+def list_serial_ports():
+    """列出可用串口"""
+    ports = serial.tools.list_ports.comports()
+    if not ports:
+        print("未找到可用的串口设备")
+        return []
+
+    print("可用串口设备:")
+    for i, port in enumerate(ports, 1):
+        print(f"  {i}. {port.device} - {port.description}")
+    return ports
 
 
 def main():
-    print("Available ports:")
-    list_ports()
+    parser = argparse.ArgumentParser(
+        description='PTP时间同步测试脚本',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  %(prog)s -l                          # 列出可用串口
+  %(prog)s /dev/ttyUSB0                # 使用默认参数同步（0.5s间隔）
+  %(prog)s /dev/ttyUSB0 -i 0.2         # 200ms精确间隔同步
+  %(prog)s /dev/ttyUSB0 -b 921600      # 使用高波特率
 
-    if len(sys.argv) < 2:
-        print("Usage: python3 sync_ptp.py /dev/ttyUSB0")
-        return
+时间戳说明:
+  t1: PC发送PTP请求的时刻
+  t2: MCU接收PTP请求完成的时刻
+  t3: MCU发送PTP响应开始的时刻
+  t4: PC接收PTP响应完成的时刻
 
-    ptp = PTPSync(sys.argv[1])
-    ptp.connect()
+计算公式:
+  offset = ((t2+g_offset - t1) - (t4 - (t3+g_offset))) / 2
+  delay = ((t4 - t1) + ((t3+g_offset) - (t2+g_offset))) / 2
+  Δt_MCU = t3 - t2 (MCU内部处理时间)
+  Δt_Linux = t4 - t1 (整体往返时间)
+        """
+    )
+
+    parser.add_argument('port', nargs='?', help='串口设备')
+    parser.add_argument('-b', '--baudrate', type=int, default=115200,
+                       help='波特率 (默认: 115200)')
+    parser.add_argument('-i', '--interval', type=float, default=0.5,
+                       help='同步间隔（秒，默认: 0.5，使用精确频率控制）')
+    parser.add_argument('-l', '--list', action='store_true',
+                       help='列出可用串口')
+
+    args = parser.parse_args()
+
+    # 列出串口
+    if args.list or not args.port:
+        list_serial_ports()
+        if not args.port:
+            print("\n请指定串口设备，例如: python3 sync_ptp.py /dev/ttyUSB0")
+            return 1
+        return 0
+
+    # 创建PTP同步器
+    ptp = PTPSync(args.port, args.baudrate)
+
+    if not ptp.connect():
+        return 1
 
     try:
-        ptp.run()
+        ptp.run(interval=args.interval)
     finally:
         ptp.close()
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

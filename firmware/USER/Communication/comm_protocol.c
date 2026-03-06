@@ -47,6 +47,7 @@ typedef enum {
     PTP_STATE_GOT_HEADER,       /* 收到帧头0xFC */
     PTP_STATE_GOT_FUNC,         /* 收到功能码 */
     PTP_STATE_GOT_MSG_TYPE,     /* 收到消息类型 */
+    PTP_STATE_GOT_CHECKSUM,     /* 收到校验和 */
 } PtpParseState_t;
 
 static PtpParseState_t g_ptp_parse_state = PTP_STATE_IDLE;
@@ -248,6 +249,11 @@ void Comm_RxCallback(UART_HandleTypeDef* huart) {
         break;
 
       case PTP_STATE_GOT_MSG_TYPE:
+        /* 收到校验和字节，跳过校验，等待帧尾 */
+        g_ptp_parse_state = PTP_STATE_GOT_CHECKSUM;
+        break;
+
+      case PTP_STATE_GOT_CHECKSUM:
         /* 等待帧尾0xDF（请求帧格式：[FC][Func][MsgType][Checksum][DF]） */
         if (g_rx_byte == PROTOCOL_TAIL) {
           /* 完整的PTP同步请求帧，在中断中立即处理 */
@@ -272,9 +278,10 @@ void Comm_RxCallback(UART_HandleTypeDef* huart) {
         } else if (g_rx_byte == PROTOCOL_HEADER) {
           /* 异常情况：新的帧开始，重置状态 */
           g_ptp_parse_state = PTP_STATE_GOT_HEADER;
+        } else {
+          /* 其他字节：忽略（不符合协议的请求帧） */
+          g_ptp_parse_state = PTP_STATE_IDLE;
         }
-        /* 其他字节：忽略（不符合协议的请求帧） */
-        g_ptp_parse_state = PTP_STATE_IDLE;
         break;
 
       default:
