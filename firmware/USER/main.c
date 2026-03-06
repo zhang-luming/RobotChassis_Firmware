@@ -45,7 +45,6 @@
 #include "imu.h"
 #include "power_management.h"
 #include "servo_control.h"
-#include "ptp_sync.h"
 
 /* Private define ------------------------------------------------------------*/
 /* 主循环计数器 - 每10ms递增 */
@@ -107,15 +106,11 @@ int main(void)
     Servo_Init();
     DEBUG_INFO("[OK] 舵机控制模块\r\n");
 
-    /* 7. PTP时间同步模块 */
-    PTP_Init();
-    DEBUG_INFO("[OK] PTP时间同步模块\r\n");
-
-    /* 8. 通信模块 */
+    /* 7. 通信模块 (PTP时间同步在通信模块中断中处理) */
     Comm_Init();
     DEBUG_INFO("[OK] 通信模块\r\n");
 
-    /* 9. IMU模块 (最后初始化，可能耗时较长) */
+    /* 8. IMU模块 (最后初始化，可能耗时较长) */
     const uint8_t imu_result = IMU_Init();
     if (imu_result != 0) {
         DEBUG_ERROR("[FAIL] MPU6050初始化失败 (错误码:%d)\r\n", imu_result);

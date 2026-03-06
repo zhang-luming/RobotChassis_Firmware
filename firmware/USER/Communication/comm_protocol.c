@@ -12,7 +12,6 @@
 #include "comm_protocol.h"
 
 #include "System/debug.h"
-#include "TimeSync/ptp_sync.h"
 #include "motor_control.h"
 #include "servo_control.h"
 #include "stdio.h"
@@ -48,11 +47,9 @@ typedef enum {
     PTP_STATE_GOT_HEADER,       /* 收到帧头0xFC */
     PTP_STATE_GOT_FUNC,         /* 收到功能码 */
     PTP_STATE_GOT_MSG_TYPE,     /* 收到消息类型 */
-    PTP_STATE_GOT_SEQ,          /* 收到序列号 */
 } PtpParseState_t;
 
 static PtpParseState_t g_ptp_parse_state = PTP_STATE_IDLE;
-static uint8_t g_ptp_seq_num = 0;
 
 /* ==================== 公共接口实现 ==================== */
 
@@ -176,14 +173,8 @@ static void ProcessFrame(uint8_t* frame, uint16_t frame_len) {
       break;
 
     case FUNC_PTP_SYNC: /* 0x10 PTP时间同步 */
-      /* 检查是否为同步请求（已被快速响应处理） */
-      if (frame_len >= 3 && frame[2] == PTP_SYNC_REQUEST) {
-        /* 同步请求已在快速响应中处理，跳过 */
-        DEBUG_VERBOSE("[Frame] PTP sync request already handled in fast path\r\n");
-      } else {
-        /* 其他PTP消息类型（如设置offset等）正常处理 */
-        PTP_ProcessFrame(frame, frame_len);
-      }
+      /* PTP同步请求已在UART接收中断中快速处理，此处跳过 */
+      DEBUG_VERBOSE("[Frame] PTP sync frame already handled in IRQ\r\n");
       break;
 
     default:
@@ -257,13 +248,7 @@ void Comm_RxCallback(UART_HandleTypeDef* huart) {
         break;
 
       case PTP_STATE_GOT_MSG_TYPE:
-        /* 收到序列号，记录并等待帧尾 */
-        g_ptp_seq_num = g_rx_byte;
-        g_ptp_parse_state = PTP_STATE_GOT_SEQ;
-        break;
-
-      case PTP_STATE_GOT_SEQ:
-        /* 等待帧尾0xDF */
+        /* 等待帧尾0xDF（请求帧格式：[FC][Func][MsgType][Checksum][DF]） */
         if (g_rx_byte == PROTOCOL_TAIL) {
           /* 完整的PTP同步请求帧，在中断中立即处理 */
           extern uint64_t Time_GetUs(void);
@@ -271,28 +256,25 @@ void Comm_RxCallback(UART_HandleTypeDef* huart) {
           /* 记录t2时间戳 */
           uint64_t t2 = Time_GetUs();
 
-          /* 构建PTP响应帧（只包含t2，t3由Comm_SendDataFrame自动添加到帧末尾） */
-          int16_t data[5];
-          data[0] = (int16_t)((g_ptp_seq_num << 8) | 0x02);  /* 响应类型 */
-
-          /* 将t2拆分为4个int16_t */
-          data[1] = (int16_t)(t2 & 0xFFFF);
-          data[2] = (int16_t)((t2 >> 16) & 0xFFFF);
-          data[3] = (int16_t)((t2 >> 32) & 0xFFFF);
-          data[4] = (int16_t)((t2 >> 48) & 0xFFFF);
+          /* 构建PTP响应帧：仅包含t2（4个int16_t），t3由Comm_SendDataFrame自动添加 */
+          int16_t data[4];
+          data[0] = (int16_t)(t2 & 0xFFFF);
+          data[1] = (int16_t)((t2 >> 16) & 0xFFFF);
+          data[2] = (int16_t)((t2 >> 32) & 0xFFFF);
+          data[3] = (int16_t)((t2 >> 48) & 0xFFFF);
 
           /* Comm_SendDataFrame会自动添加发送时间戳（tx_timestamp = t3）到帧末尾 */
-          Comm_SendDataFrame(FUNC_PTP_SYNC, data, 5);
+          Comm_SendDataFrame(FUNC_PTP_SYNC, data, 4);
 
           g_ptp_parse_state = PTP_STATE_IDLE;
 
-          DEBUG_VERBOSE("[PTP] IRQ resp: seq=%d, t2=%lu\r\n",
-                        g_ptp_seq_num, (unsigned long)t2);
+          DEBUG_VERBOSE("[PTP] IRQ resp: t2=%lu\r\n", (unsigned long)t2);
         } else if (g_rx_byte == PROTOCOL_HEADER) {
           /* 异常情况：新的帧开始，重置状态 */
           g_ptp_parse_state = PTP_STATE_GOT_HEADER;
         }
-        /* 其他字节继续等待帧尾 */
+        /* 其他字节：忽略（不符合协议的请求帧） */
+        g_ptp_parse_state = PTP_STATE_IDLE;
         break;
 
       default:

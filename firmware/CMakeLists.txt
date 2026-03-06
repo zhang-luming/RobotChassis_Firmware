@@ -65,7 +65,6 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/ServoControl/servo_control.c
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/IMU/imu.c
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/LedControl/led_control.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/USER/TimeSync/ptp_sync.c
 )
 
 # 添加头文件包含路径
@@ -87,7 +86,6 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/ServoControl
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/IMU
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/LedControl
-        ${CMAKE_CURRENT_SOURCE_DIR}/USER/TimeSync
 )
 
 # 添加项目符号（宏定义）
