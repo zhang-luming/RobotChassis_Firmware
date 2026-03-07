@@ -70,8 +70,13 @@ void Motor_SampleEncoders(void);
  * @brief 读取编码器位置并上报
  *
  * 功能：
- * - 使用采样的增量更新累积位置
- * - 上报累积位置给上位机
+ * - 直接读取当前编码器计数值（16位）
+ * - 上报给上位机
+ *
+ * 说明：
+ * - 利用16位编码器的自然溢出（65535→0）
+ * - 上位机通过计算两次上报的增量得到速度
+ * - 节省内存：8字节（4×int16）vs 16字节（4×int32拆分）
  *
  * 注意：
  * - 必须先调用 Motor_SampleEncoders()
@@ -114,7 +119,10 @@ void Motor_ProcessSpeedFrame(uint8_t *frame, uint16_t frame_len);
  * @param frame 帧数据指针
  * @param frame_len 帧长度
  *
- * 帧格式：[FC][0x07][Kp高][Kp低][Ki高][Ki低][Kd高][Kd低][Checksum][DF]
+ * 帧格式：[FC][0x05][Kp低][Kp高][Ki低][Ki高][Kd低][Kd高][时间戳8B][校验][DF]
+ * 索引：  0    1     2    3     4    5     6    7     8-15    16   17
+ *
+ * 字节序：小端序（与速度控制帧一致）
  */
 void Motor_ProcessPIDFrame(uint8_t *frame, uint16_t frame_len);
 

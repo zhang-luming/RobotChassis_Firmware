@@ -71,7 +71,7 @@ FUNC_NAMES = {
 # MCU上报数据的数据长度定义（字节数，不包括8字节时间戳）
 MCU_DATA_LENGTHS = {
     FuncCode.BATTERY_VOLTAGE: 2,    # 1×int16
-    FuncCode.ENCODER: 16,           # 8×int16 → 4×int32
+    FuncCode.ENCODER: 8,            # 4×int16（编码器位置）
     FuncCode.IMU: 18,               # 9×int16
     FuncCode.PTP_SYNC: 8,           # 4×int16 → t2时间戳
 }
@@ -208,12 +208,9 @@ def format_battery(data: List[int]) -> str:
 
 def format_encoder(data: List[int]) -> str:
     """格式化编码器数据"""
-    # 8个int16_t组成4个int32_t
-    enc_a = reconstruct_int32(data[0], data[1])
-    enc_b = reconstruct_int32(data[2], data[3])
-    enc_c = reconstruct_int32(data[4], data[5])
-    enc_d = reconstruct_int32(data[6], data[7])
-    return f"A={enc_a:8d} B={enc_b:8d} C={enc_c:8d} D={enc_d:8d}"
+    # 4个int16_t直接表示编码器计数值（0-65535）
+    # 上位机自行处理溢出（65535→0）
+    return f"A={data[0]:6d} B={data[1]:6d} C={data[2]:6d} D={data[3]:6d}"
 
 
 def format_imu(data: List[int]) -> str:

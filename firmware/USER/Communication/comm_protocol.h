@@ -29,7 +29,7 @@ extern "C" {
 
 /* 功能码定义 */
 #define FUNC_BATTERY_VOLTAGE  0x01  /* 电池电压 */
-#define FUNC_ENCODER          0x02  /* 编码器 */
+#define FUNC_ENCODER          0x02  /* 编码器位置（4×int16，直接上报计数器值） */
 #define FUNC_IMU              0x03  /* IMU合并数据（欧拉角+陀螺仪+加速度） */
 #define FUNC_MOTOR_SPEED      0x04  /* 电机目标速度 */
 #define FUNC_PID_PARAM        0x05  /* PID参数设置 */
@@ -145,7 +145,7 @@ void Comm_SendDataFrame(uint8_t func_code, int16_t *data, uint8_t data_len);
  * @示例
  *   // 在IMU中断中调用
  *   Comm_SendDataFrameDMA(FUNC_IMU, imu_data, 9);
- *   Comm_SendDataFrameDMA(FUNC_ENCODER, encoder_data, 8);
+ *   Comm_SendDataFrameDMA(FUNC_ENCODER, encoder_data, 4);  // 4个int16 (编码器位置)
  */
 HAL_StatusTypeDef Comm_SendDataFrameDMA(uint8_t func_code, int16_t *data, uint8_t data_len);
 

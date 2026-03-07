@@ -44,8 +44,8 @@ static uint16_t g_sample_last[MOTOR_COUNT] = {ENCODER_MIDDLE, ENCODER_MIDDLE,
 static int16_t g_sample_deltas[MOTOR_COUNT] = {0};
 
 /* ========== 上报模块专用变量 ========== */
-/* 编码器累积位置（int32避免溢出，支持长时间运行） */
-static int32_t g_report_accum[MOTOR_COUNT] = {0};
+/* 编码器位置（直接使用采样值，利用16位自然溢出） */
+/* 说明：不再累积位置，直接上报当前计数器值，上位机自行处理溢出 */
 
 
 /* 上次调用时间戳（微秒） */
@@ -69,9 +69,9 @@ typedef struct {
 static MotorPID_t g_motor_pid[MOTOR_COUNT] = {0};
 
 /* PID默认参数（可通过串口动态调整） */
-static int16_t g_pid_p = 150;  /* 比例系数 */
-static int16_t g_pid_i = 10;   /* 积分系数 */
-static int16_t g_pid_d = 5;    /* 微分系数 */
+static int16_t g_pid_p = 120;  /* 比例系数 */
+static int16_t g_pid_i = 3;   /* 积分系数 */
+static int16_t g_pid_d = 1;    /* 微分系数 */
 
 /* ==================== 私有函数前向声明 ==================== */
 static int16_t Motor_PIDControl(uint8_t motor_id, int16_t target_speed,
@@ -144,33 +144,26 @@ void Motor_SampleEncoders(void) {
 
   /* 电机A - TIM2 */
   current_counter = __HAL_TIM_GET_COUNTER(&htim2);
-  delta = (int16_t)current_counter - (int16_t)g_sample_last[0];
-  if (delta < -32767) delta += 65536;   /* 处理向前溢出：65535→0 */
-  else if (delta > 32767) delta -= 65536; /* 处理向后溢出：0→65535 */
+  /* 利用uint16的自然回环特性计算增量 */
+  delta = (int16_t)((uint16_t)(current_counter - g_sample_last[0]));
   g_sample_deltas[0] = delta;
   g_sample_last[0] = current_counter;
 
   /* 电机B - TIM3（反向） */
   current_counter = __HAL_TIM_GET_COUNTER(&htim3);
-  delta = (int16_t)current_counter - (int16_t)g_sample_last[1];
-  if (delta < -32767) delta += 65536;
-  else if (delta > 32767) delta -= 65536;
+  delta = (int16_t)((uint16_t)(current_counter - g_sample_last[1]));
   g_sample_deltas[1] = -delta;  /* 电机B反向 */
   g_sample_last[1] = current_counter;
 
   /* 电机C - TIM4 */
   current_counter = __HAL_TIM_GET_COUNTER(&htim4);
-  delta = (int16_t)current_counter - (int16_t)g_sample_last[2];
-  if (delta < -32767) delta += 65536;
-  else if (delta > 32767) delta -= 65536;
+  delta = (int16_t)((uint16_t)(current_counter - g_sample_last[2]));
   g_sample_deltas[2] = delta;
   g_sample_last[2] = current_counter;
 
   /* 电机D - TIM5（反向） */
   current_counter = __HAL_TIM_GET_COUNTER(&htim5);
-  delta = (int16_t)current_counter - (int16_t)g_sample_last[3];
-  if (delta < -32767) delta += 65536;
-  else if (delta > 32767) delta -= 65536;
+  delta = (int16_t)((uint16_t)(current_counter - g_sample_last[3]));
   g_sample_deltas[3] = -delta;  /* 电机D反向 */
   g_sample_last[3] = current_counter;
 }
@@ -179,29 +172,27 @@ void Motor_SampleEncoders(void) {
  * @brief 读取编码器位置并上报
  *
  * 功能：
- * - 使用采样的增量更新累积位置
- * - 上报累积位置给上位机
+ * - 直接读取当前编码器计数值（16位）
+ * - 上报给上位机
+ *
+ * 优势：
+ * - 利用16位编码器的自然溢出（65535→0）
+ * - 上位机通过计算两次上报的增量得到速度
+ * - 节省内存和时间（无需累积和拆分）
  *
  * 注意：
  * - 必须先调用 Motor_SampleEncoders()
- * - 使用 g_sample_deltas[] 的数据
  * - 通过DMA非阻塞发送
  */
 void Motor_ReadAndReport(void) {
-  /* 使用采样的增量更新累积位置 */
+  /* 直接使用上次采样的编码器计数值 */
+  int16_t tx_data[4];
   for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
-    g_report_accum[i] += g_sample_deltas[i];
+    tx_data[i] = (int16_t)g_sample_last[i];
   }
 
-  /* 将int32拆分为2个int16发送（避免int16溢出） */
-  int16_t tx_data[8];
-  for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
-    tx_data[i * 2]     = (int16_t)(g_report_accum[i] & 0xFFFF);        /* 低16位 */
-    tx_data[i * 2 + 1] = (int16_t)((g_report_accum[i] >> 16) & 0xFFFF); /* 高16位 */
-  }
-
-  /* 使用DMA发送队列发送编码器数据（8个int16 = 4个int32） */
-  Comm_SendDataFrameDMA(FUNC_ENCODER, tx_data, 8);
+  /* 使用DMA发送队列发送编码器数据（4个int16） */
+  Comm_SendDataFrameDMA(FUNC_ENCODER, tx_data, 4);
 }
 
 /**
@@ -324,21 +315,25 @@ void Motor_ProcessSetPID(uint8_t motor_id, int16_t kp, int16_t ki, int16_t kd) {
  * @param frame 帧数据指针
  * @param frame_len 帧长度
  *
- * 帧格式：[FC][0x07][Kp高][Kp低][Ki高][Ki低][Kd高][Kd低][Checksum][DF]
- * 索引：  0    1     2    3     4    5     6    7      8        9
+ * 帧格式：[FC][0x05][Kp低][Kp高][Ki低][Ki高][Kd低][Kd高][时间戳8B][校验][DF]
+ * 索引：  0    1     2    3     4    5     6    7     8-15    16   17
  *
  * 功能：
- * - 从帧中解析PID参数（3个int16_t，大端序）
+ * - 从帧中解析PID参数（3个int16_t，小端序）
  * - 为所有4个电机设置相同的PID参数
+ *
+ * 字节序说明：
+ * - 统一使用小端序（与速度控制帧一致）
+ * - Kp/Ki/Kd = 放大100倍的PID参数
  */
 void Motor_ProcessPIDFrame(uint8_t *frame, uint16_t frame_len) {
-  /* 帧数据从索引2开始，格式：3个int16_t（大端序） */
+  /* 帧数据从索引2开始，格式：3个int16_t（小端序） */
   uint8_t *data = &frame[2];
 
-  /* 解析PID参数 */
-  int16_t kp = (int16_t)((data[0] << 8) | data[1]);
-  int16_t ki = (int16_t)((data[2] << 8) | data[3]);
-  int16_t kd = (int16_t)((data[4] << 8) | data[5]);
+  /* 小端序解析PID参数 */
+  int16_t kp = (int16_t)((data[1] << 8) | data[0]);
+  int16_t ki = (int16_t)((data[3] << 8) | data[2]);
+  int16_t kd = (int16_t)((data[5] << 8) | data[4]);
 
   /* 为所有4个电机设置相同的PID参数 */
   for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
@@ -387,6 +382,13 @@ static int16_t Motor_PIDControl(uint8_t motor_id, int16_t target_speed,
         (int16_t)(pid->kp * pid->bias * PID_SCALE +
                   pid->ki * pid->bias_integral * PID_SCALE +
                   pid->kd * (pid->bias - pid->bias_last) * PID_SCALE);
+
+    /* PWM输出限幅（防止累积溢出） */
+    if (pid->pwm_out > MOTOR_PWM_MAX) {
+      pid->pwm_out = MOTOR_PWM_MAX;
+    } else if (pid->pwm_out < -MOTOR_PWM_MAX) {
+      pid->pwm_out = -MOTOR_PWM_MAX;
+    }
 
     /* 保存上次误差 */
     pid->bias_last = pid->bias;
