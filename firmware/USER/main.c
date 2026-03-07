@@ -138,7 +138,7 @@ int main(void)
             /* 100Hz 任务 ========== */
 
             /* 通信协议处理 (接收并分发命令) */
-            Comm_Update();
+            Comm_Receive();
 
             /* LED状态更新 */
             LED_Update();

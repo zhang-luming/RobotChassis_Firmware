@@ -272,19 +272,13 @@ HAL_StatusTypeDef USART2_DMA_WaitForComplete(uint32_t timeout_ms) {
 /**
  * @brief DMA发送完成回调
  * @param huart UART句柄
- *
- * 功能：
- * - 清除DMA忙碌标志
- * - 自动启动发送队列中的下一帧
  */
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
   if (huart->Instance == USART2) {
-    /* 清除忙碌标志 */
+    /* 清除忙碌标志并启动队列中的下一帧 */
     dma_tx_busy = 0;
-
-    /* 自动启动队列中的下一帧 */
-    extern void Comm_DMA_TxCompleteHandler(void);
-    Comm_DMA_TxCompleteHandler();
+    extern void DMA_StartNextFrame(void);
+    DMA_StartNextFrame();
   }
 }
 

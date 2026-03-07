@@ -201,7 +201,7 @@ void Motor_ReadAndReport(void) {
   }
 
   /* 使用DMA发送队列发送编码器数据（8个int16 = 4个int32） */
-  Comm_SendDataFrameDMAQueue(FUNC_ENCODER, tx_data, 8);
+  Comm_SendDataFrameDMA(FUNC_ENCODER, tx_data, 8);
 }
 
 /**

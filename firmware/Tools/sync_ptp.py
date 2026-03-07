@@ -41,7 +41,7 @@ class PTPSync:
     REQUEST_FRAME_SIZE = 5
     RESPONSE_FRAME_SIZE = 20
 
-    def __init__(self, port: str, baudrate: int = 115200):
+    def __init__(self, port: str, baudrate: int = 921600):
         self.port = port
         self.baudrate = baudrate
         self.ser: Optional[serial.Serial] = None
@@ -471,8 +471,8 @@ def main():
     )
 
     parser.add_argument('port', nargs='?', help='串口设备')
-    parser.add_argument('-b', '--baudrate', type=int, default=115200,
-                       help='波特率 (默认: 115200)')
+    parser.add_argument('-b', '--baudrate', type=int, default=921600,
+                       help='波特率 (默认: 921600)')
     parser.add_argument('-i', '--interval', type=float, default=0.5,
                        help='同步间隔（秒，默认: 0.5，使用精确频率控制）')
     parser.add_argument('-l', '--list', action='store_true',

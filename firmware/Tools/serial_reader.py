@@ -22,11 +22,9 @@
 
 import sys
 import struct
-import json
 import csv
 from typing import Optional, List, Dict, Any
-from datetime import datetime
-from collections import defaultdict, deque
+from collections import defaultdict
 import time
 
 # 确保导入的是 pyserial 而非标准库的 serial
