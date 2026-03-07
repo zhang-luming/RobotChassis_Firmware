@@ -45,13 +45,13 @@
  *
  * 加速度计转换：
  *   量程±2G，灵敏度16384 LSB/G
- *   m/s²转换：raw / 32767 * 2 * 9.8 * 100
- *   简化：raw * 1960 / 32767 ≈ raw * 60 / 1000
+ *   目标单位：0.01G（放大100倍）
+ *   公式：result = (raw * 100) / 16384
  */
 #define GYRO_SCALE_NUM    266      /* 陀螺仪缩放分子 */
 #define GYRO_SCALE_DEN    2500     /* 陀螺仪缩放分母 */
-#define ACC_SCALE_NUM     60       /* 加速度缩放分子 */
-#define ACC_SCALE_DEN     1000     /* 加速度缩放分母 */
+#define ACC_SCALE_NUM     100      /* 加速度缩放分子 (raw * 100 / 16384) */
+#define ACC_SCALE_DEN     16384    /* 加速度缩放分母 (16384 LSB/G) */
 
 /* ==================== 私有变量 ==================== */
 
