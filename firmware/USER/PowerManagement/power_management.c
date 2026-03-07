@@ -60,5 +60,5 @@ void Power_Update(void) {
  */
 void Power_Send(void) {
     int16_t voltage_data = (int16_t)g_battery_voltage;
-    Comm_SendDataFrame(FUNC_BATTERY_VOLTAGE, &voltage_data, 1);
+    Comm_SendDataFrameDMA(FUNC_BATTERY_VOLTAGE, &voltage_data, 1);
 }
