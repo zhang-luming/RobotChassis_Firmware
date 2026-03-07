@@ -81,6 +81,34 @@ extern uint8_t UART_SEND_BUF[128];
 #define DMA_SEND_BUF_SIZE 128
 extern uint8_t DMA_SEND_BUF[DMA_SEND_BUF_SIZE];
 
+/* ==================== DMA发送队列 ==================== */
+
+/*
+ * DMA发送队列（双缓冲区机制）
+ *
+ * 工作原理：
+ * - 提供一个发送队列（环形缓冲区），存放待发送的帧
+ * - DMA发送完成中断中自动启动队列中的下一帧
+ * - 中断中调用发送接口只需将帧放入队列，立即返回
+ * - 避免数据丢失，提高中断响应速度
+ *
+ * 队列配置：
+ * - DMA_TX_QUEUE_SIZE: 队列深度（可存储的帧数）
+ * - 每帧最大长度：DMA_SEND_BUF_SIZE (128字节)
+ *
+ * 使用方式：
+ * - Comm_SendDataFrameDMAQueue(): 将帧放入队列（推荐，用于中断中）
+ * - Comm_SendDataFrameDMA(): 直接发送（阻塞式，如果DMA忙碌则返回HAL_BUSY）
+ */
+
+#define DMA_TX_QUEUE_SIZE 4  /* 队列深度：4帧 */
+
+/* DMA发送帧结构 */
+typedef struct {
+    uint8_t data[DMA_SEND_BUF_SIZE];  /* 帧数据 */
+    uint8_t len;                      /* 帧长度 */
+} DmaTxFrame_t;
+
 /* ==================== 核心接口 ==================== */
 
 /**
@@ -160,11 +188,47 @@ void Comm_SendDataFrame(uint8_t func_code, int16_t *data, uint8_t data_len);
 HAL_StatusTypeDef Comm_SendDataFrameDMA(uint8_t func_code, int16_t *data, uint8_t data_len);
 
 /**
+ * @brief DMA发送队列方式发送协议数据帧（推荐用于中断中）
+ * @param func_code 功能码
+ * @param data 数据指针（int16_t数组）
+ * @param data_len 数据长度（int16_t个数）
+ * @return HAL_OK=成功入队，HAL_ERROR=队列已满
+ *
+ * 功能：
+ * - 与Comm_SendDataFrameDMA()相同的帧格式
+ * - 将帧放入发送队列，立即返回
+ * - DMA发送完成中断自动启动队列中的下一帧
+ * - 适合在中断中调用，避免阻塞
+ *
+ * 优势：
+ * - 非阻塞，中断安全
+ * - 自动处理DMA忙碌状态
+ * - 队列深度4帧，减少数据丢失
+ *
+ * 注意：
+ * - 如果队列满，返回HAL_ERROR，新帧被丢弃
+ * - 数据会被复制到队列缓冲区，调用后可修改原始数据
+ *
+ * 示例：
+ *   // 在IMU中断中调用
+ *   Comm_SendDataFrameDMAQueue(FUNC_IMU, imu_data, 9);
+ *   Comm_SendDataFrameDMAQueue(FUNC_ENCODER, encoder_data, 8);
+ *   // 两次调用都会成功，队列自动处理DMA时序
+ */
+HAL_StatusTypeDef Comm_SendDataFrameDMAQueue(uint8_t func_code, int16_t *data, uint8_t data_len);
+
+/**
  * @brief 串口接收中断回调
  * @param huart UART句柄
  * @note 在HAL_UART_RxCpltCallback中调用
  */
 void Comm_RxCallback(UART_HandleTypeDef *huart);
+
+/**
+ * @brief DMA发送完成处理函数
+ * @note 在HAL_UART_TxCpltCallback中调用
+ */
+void Comm_DMA_TxCompleteHandler(void);
 
 #ifdef __cplusplus
 }

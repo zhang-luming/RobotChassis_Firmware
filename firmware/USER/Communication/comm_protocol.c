@@ -52,6 +52,74 @@ typedef enum {
 
 static PtpParseState_t g_ptp_parse_state = PTP_STATE_IDLE;
 
+/* ==================== DMA发送队列 ==================== */
+
+/*
+ * DMA发送队列实现
+ *
+ * 工作流程：
+ * 1. 中断中调用 Comm_SendDataFrameDMAQueue() 将帧放入队列
+ * 2. 如果DMA空闲，立即启动发送队列头部的帧
+ * 3. DMA发送完成中断中，自动启动队列中的下一帧
+ * 4. 队列满时，新帧被丢弃（返回HAL_ERROR）
+ */
+
+/* DMA发送队列（环形缓冲区） */
+static DmaTxFrame_t g_dma_tx_queue[DMA_TX_QUEUE_SIZE];
+
+/* 队列读写索引 */
+static volatile uint8_t g_queue_write_idx = 0;  /* 写指针（入队） */
+static volatile uint8_t g_queue_read_idx = 0;   /* 读指针（出队/DMA发送） */
+
+/* 队列状态 */
+static volatile uint8_t g_queue_count = 0;      /* 当前队列中的帧数 */
+
+/**
+ * @brief 检查队列是否为空
+ */
+static inline uint8_t Queue_IsEmpty(void) {
+  return g_queue_count == 0;
+}
+
+/**
+ * @brief 检查队列是否已满
+ */
+static inline uint8_t Queue_IsFull(void) {
+  return g_queue_count >= DMA_TX_QUEUE_SIZE;
+}
+
+/**
+ * @brief 获取队列中的帧数
+ */
+static inline uint8_t Queue_GetCount(void) {
+  return g_queue_count;
+}
+
+/**
+ * @brief 启动DMA发送队列中的下一帧
+ *
+ * 功能：
+ * - 从队列中取出一帧
+ * - 启动DMA传输
+ * - 在DMA发送完成中断中自动调用
+ *
+ * 注意：
+ * - 此函数在DMA发送完成中断中调用
+ * - 如果队列为空，清除DMA忙碌标志
+ */
+static void DMA_StartNextFrame(void);
+
+/**
+ * @brief 构建协议帧
+ * @param buf 输出缓冲区
+ * @param func_code 功能码
+ * @param data 数据指针（int16_t数组）
+ * @param data_len 数据长度（int16_t个数）
+ * @return 帧长度
+ */
+static uint8_t BuildDataFrame(uint8_t* buf, uint8_t func_code,
+                               int16_t* data, uint8_t data_len);
+
 /* ==================== 公共接口实现 ==================== */
 
 /**
@@ -429,4 +497,142 @@ HAL_StatusTypeDef Comm_SendDataFrameDMA(uint8_t func_code, int16_t* data, uint8_
   }
 
   return status;
+}
+
+/* ==================== DMA发送队列实现 ==================== */
+
+/**
+ * @brief 构建协议帧
+ * @param buf 输出缓冲区
+ * @param func_code 功能码
+ * @param data 数据指针（int16_t数组）
+ * @param data_len 数据长度（int16_t个数）
+ * @return 帧长度
+ */
+static uint8_t BuildDataFrame(uint8_t* buf, uint8_t func_code,
+                               int16_t* data, uint8_t data_len) {
+  extern uint64_t Time_GetUs(void);
+
+  /* 构建协议帧 */
+  buf[0] = PROTOCOL_HEADER;
+  buf[1] = func_code;
+
+  /* 复制数据（int16_t转uint8_t，小端序） */
+  uint8_t data_idx = 2;
+  for (uint8_t i = 0; i < data_len; i++) {
+    int16_t value = data[i];
+    buf[data_idx++] = value & 0xFF;          /* 低字节在前 */
+    buf[data_idx++] = (value >> 8) & 0xFF;  /* 高字节在后 */
+  }
+
+  /* 添加发送时间戳（8字节，64位微秒时间戳，小端序） */
+  uint64_t tx_timestamp = Time_GetUs();
+  for (int i = 0; i < 8; i++) {
+    buf[data_idx++] = (tx_timestamp >> (i * 8)) & 0xFF;
+  }
+
+  /* 计算校验和（包括时间戳） */
+  buf[data_idx] = Comm_XORCheck(buf, data_idx);
+  buf[data_idx + 1] = PROTOCOL_TAIL;
+
+  return data_idx + 2;  /* 返回帧长度 */
+}
+
+/**
+ * @brief 启动DMA发送队列中的下一帧
+ *
+ * 功能：
+ * - 从队列中取出一帧
+ * - 启动DMA传输
+ * - 在DMA发送完成中断中自动调用
+ *
+ * 注意：
+ * - 此函数在DMA发送完成中断中调用
+ * - 如果队列为空，清除DMA忙碌标志
+ */
+static void DMA_StartNextFrame(void) {
+  extern void USART2_DMA_SetBusy(uint8_t busy);
+
+  /* 检查队列是否为空 */
+  if (Queue_IsEmpty()) {
+    /* 队列为空，清除DMA忙碌标志 */
+    USART2_DMA_SetBusy(0);
+    return;
+  }
+
+  /* 从队列中取出一帧 */
+  DmaTxFrame_t* frame = &g_dma_tx_queue[g_queue_read_idx];
+
+  /* 启动DMA发送 */
+  HAL_StatusTypeDef status = HAL_UART_Transmit_DMA(&huart2, frame->data, frame->len);
+
+  if (status == HAL_OK) {
+    /* 发送成功，更新读指针 */
+    g_queue_read_idx = (g_queue_read_idx + 1) % DMA_TX_QUEUE_SIZE;
+    g_queue_count--;
+  } else {
+    /* 发送失败，清除忙碌标志，保持帧在队列中 */
+    USART2_DMA_SetBusy(0);
+    DEBUG_ERROR("[DMA] 启动失败: %d\r\n", status);
+  }
+}
+
+/**
+ * @brief DMA发送队列方式发送协议数据帧（推荐用于中断中）
+ * @param func_code 功能码
+ * @param data 数据指针（int16_t数组）
+ * @param data_len 数据长度（int16_t个数）
+ * @return HAL_OK=成功入队，HAL_ERROR=队列已满
+ *
+ * 功能：
+ * - 将帧放入发送队列
+ * - 如果DMA空闲，立即启动发送
+ * - 适合在中断中调用，避免阻塞
+ */
+HAL_StatusTypeDef Comm_SendDataFrameDMAQueue(uint8_t func_code, int16_t* data, uint8_t data_len) {
+  extern uint8_t USART2_DMA_IsBusy(void);
+
+  /* 计算帧长度 */
+  uint8_t frame_len = 2 + (data_len * 2) + 8 + 2;  /* 帧头+功能码 + 数据 + 时间戳 + 校验+帧尾 */
+
+  /* 检查缓冲区大小 */
+  if (frame_len > DMA_SEND_BUF_SIZE) {
+    return HAL_ERROR;
+  }
+
+  /* 检查队列是否已满 */
+  if (Queue_IsFull()) {
+    DEBUG_WARN("[DMA] 队列已满，丢弃帧 (FC=0x%02X)\r\n", func_code);
+    return HAL_ERROR;
+  }
+
+  /* 构建协议帧到队列缓冲区 */
+  DmaTxFrame_t* frame = &g_dma_tx_queue[g_queue_write_idx];
+  frame->len = BuildDataFrame(frame->data, func_code, data, data_len);
+
+  /* 更新写指针 */
+  g_queue_write_idx = (g_queue_write_idx + 1) % DMA_TX_QUEUE_SIZE;
+  g_queue_count++;
+
+  /* 如果DMA空闲，立即启动发送 */
+  if (!USART2_DMA_IsBusy()) {
+    DMA_StartNextFrame();
+  }
+
+  return HAL_OK;
+}
+
+/**
+ * @brief DMA发送完成处理函数
+ *
+ * 功能：
+ * - 在DMA发送完成中断中调用
+ * - 自动启动队列中的下一帧
+ *
+ * 注意：
+ * - 此函数由HAL_UART_TxCpltCallback调用
+ * - 不要在其他地方调用
+ */
+void Comm_DMA_TxCompleteHandler(void) {
+  DMA_StartNextFrame();
 }

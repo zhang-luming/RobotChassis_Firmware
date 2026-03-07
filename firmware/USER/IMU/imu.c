@@ -226,8 +226,8 @@ static void IMU_UpdateAndPublish(void) {
     imu_data[7] = s_acc[1];          /* 加速度 Y */
     imu_data[8] = s_acc[2];          /* 加速度 Z */
 
-    /* 使用DMA发送合并的IMU数据帧（9个int16_t = 18字节数据） */
-    Comm_SendDataFrameDMA(FUNC_IMU, imu_data, 9);
+    /* 使用DMA发送队列发送合并的IMU数据帧（9个int16_t = 18字节数据） */
+    Comm_SendDataFrameDMAQueue(FUNC_IMU, imu_data, 9);
 }
 
 /* ==================== 数据获取接口实现 ==================== */

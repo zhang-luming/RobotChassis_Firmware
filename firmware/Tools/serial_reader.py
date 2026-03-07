@@ -1,24 +1,33 @@
 #!/usr/bin/env python3
 """
-机器人底盘上位机数据读取脚本
+机器人底盘上位机数据读取工具
 
 功能：
-- 从串口读取数据
-- 解析通信协议帧
-- 打印解析后的数据
+- 从串口读取并解析通信协议帧
+- 支持所有MCU上报数据类型（电池/编码器/IMU/PTP）
+- 实时统计和频率监控
+- 数据记录到文件
+- 友好的显示格式
 
-协议格式：[0xFC][FuncCode][Data...][Checksum][0xDF]
-- 帧头：0xFC
-- 功能码：1字节
-- 数据：可变长度int16_t数组（小端序）
-- 校验和：XOR校验（包括帧头、功能码和数据段）
-- 帧尾：0xDF
+协议帧格式：
+  MCU→PC（新格式，带时间戳）：
+    [0xFC][FuncCode][Data...][TxTimestamp(8B)][Checksum][0xDF]
+
+  PC→MCU（控制指令，不带时间戳）：
+    [0xFC][FuncCode][Data...][Checksum][0xDF]
+
+字节序：Little-Endian（小端序）
+校验和：XOR校验所有数据字节（MCU上报包括时间戳）
 """
 
 import sys
 import struct
-from typing import Optional, List
+import json
+import csv
+from typing import Optional, List, Dict, Any
 from datetime import datetime
+from collections import defaultdict, deque
+import time
 
 # 确保导入的是 pyserial 而非标准库的 serial
 try:
@@ -41,22 +50,62 @@ if not hasattr(serial, 'Serial'):
 PROTOCOL_HEADER = 0xFC
 PROTOCOL_TAIL = 0xDF
 
-# MCU上报数据的功能码定义
+# 功能码定义
+class FuncCode:
+    BATTERY_VOLTAGE = 0x01  # 电池电压 (MCU→PC)
+    ENCODER = 0x02          # 编码器位置 (MCU→PC)
+    IMU = 0x03              # IMU合并数据 (MCU→PC)
+    MOTOR_SPEED = 0x04      # 电机目标速度 (PC→MCU)
+    PID_PARAM = 0x05        # PID参数设置 (PC→MCU)
+    SERVO_CONTROL = 0x06    # 舵机控制 (PC→MCU, 待实现)
+    PTP_SYNC = 0x10         # PTP时间同步 (双向)
+
+# 功能码名称映射
 FUNC_NAMES = {
-    0x01: "电池电压",
-    0x02: "编码器",
-    0x03: "IMU数据",
+    FuncCode.BATTERY_VOLTAGE: "电池电压",
+    FuncCode.ENCODER: "编码器",
+    FuncCode.IMU: "IMU数据",
+    FuncCode.MOTOR_SPEED: "电机速度",  # PC→MCU
+    FuncCode.PID_PARAM: "PID参数",    # PC→MCU
+    FuncCode.PTP_SYNC: "PTP同步",
 }
 
-# 数据长度定义（字节数）- 不包括8字节时间戳
-FUNC_DATA_LENGTHS = {
-    0x01: 2,   # 电池电压: 1个int16_t
-    0x02: 16,  # 编码器: 4个int32_t = 8个int16_t
-    0x03: 18,  # IMU数据: 9个int16_t (欧拉角3 + 陀螺仪3 + 加速度3)
+# MCU上报数据的数据长度定义（字节数，不包括8字节时间戳）
+MCU_DATA_LENGTHS = {
+    FuncCode.BATTERY_VOLTAGE: 2,    # 1×int16
+    FuncCode.ENCODER: 16,           # 8×int16 → 4×int32
+    FuncCode.IMU: 18,               # 9×int16
+    FuncCode.PTP_SYNC: 8,           # 4×int16 → t2时间戳
 }
 
-# 帧格式：[FC][Func][Data...][TxTimestamp(8 bytes)][Checksum][DF]
 TX_TIMESTAMP_LEN = 8  # 发送时间戳固定8字节
+
+
+# ==================== 协议帧类 ====================
+
+class ProtocolFrame:
+    """协议帧解析结果"""
+
+    def __init__(self, func_code: int, data: List[int],
+                 tx_timestamp: int, raw: bytes, is_valid: bool = True):
+        self.func_code = func_code
+        self.func_name = FUNC_NAMES.get(func_code, f"未知(0x{func_code:02X})")
+        self.data = data
+        self.tx_timestamp = tx_timestamp
+        self.raw = raw
+        self.is_valid = is_valid
+        self.error_msg = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典格式"""
+        return {
+            'func_code': f"0x{self.func_code:02X}",
+            'func_name': self.func_name,
+            'data': self.data,
+            'tx_timestamp_us': self.tx_timestamp,
+            'is_valid': self.is_valid,
+            'error': self.error_msg
+        }
 
 
 # ==================== 解析函数 ====================
@@ -78,21 +127,27 @@ def parse_int16_array(data: bytes, num_values: int) -> List[int]:
     return values
 
 
-def parse_frame(frame: bytes) -> Optional[dict]:
+def parse_int64_timestamp(data: bytes) -> int:
+    """解析64位时间戳（小端序）"""
+    return int.from_bytes(data, byteorder='little')
+
+
+def reconstruct_int32(low: int, high: int) -> int:
+    """将两个int16_t重构为int32_t（小端序：低16位在前，高16位在后）"""
+    val = (high << 16) | (low & 0xFFFF)
+    if val & 0x80000000:  # 处理负数
+        val = val - 0x100000000
+    return val
+
+
+def parse_frame(frame: bytes) -> Optional[ProtocolFrame]:
     """
     解析协议帧
 
-    新帧格式：[FC][Func][Data...][TxTimestamp(8B)][Checksum][DF]
+    新帧格式（MCU上报）：[FC][Func][Data...][TxTimestamp(8B)][Checksum][DF]
+    旧帧格式（PC下发）：[FC][Func][Data...][Checksum][DF]
 
-    返回：
-        {
-            'func_code': int,
-            'func_name': str,
-            'data': list,
-            'timestamp': int (微秒时间戳),
-            'raw': bytes
-        }
-        或 None（解析失败）
+    返回：ProtocolFrame对象或None（解析失败）
     """
     if len(frame) < 5:  # 最小帧长度
         return None
@@ -104,107 +159,193 @@ def parse_frame(frame: bytes) -> Optional[dict]:
         return None
 
     func_code = frame[1]
-    if func_code not in FUNC_NAMES:
-        print(f"  [警告] 未知功能码: 0x{func_code:02X}")
-        return None
 
-    # 数据长度 = 总帧长 - 帧头(1) - 功能码(1) - 时间戳(8) - 校验(1) - 帧尾(1)
-    data_len = len(frame) - 12
+    # 判断是否为MCU上报帧（带时间戳）
+    # MCU上报帧通常较长（最少14字节），且功能码在MCU_DATA_LENGTHS中
+    has_timestamp = func_code in MCU_DATA_LENGTHS
 
-    # 验证数据长度
-    expected_len = FUNC_DATA_LENGTHS.get(func_code)
-    if expected_len is not None and data_len != expected_len:
-        print(f"  [警告] 功能码0x{func_code:02X}的数据长度不匹配: 预期{expected_len}, 实际{data_len}")
+    if has_timestamp:
+        # MCU上报帧：[FC][Func][Data...][TxTimestamp(8B)][Checksum][DF]
+        expected_data_len = MCU_DATA_LENGTHS.get(func_code, 0)
+        expected_frame_len = 4 + expected_data_len + TX_TIMESTAMP_LEN
 
-    # 计算并验证校验和（包括时间戳）
-    checksum_data = frame[:-2]  # 排除校验位和帧尾
+        if len(frame) != expected_frame_len:
+            return None
+
+        data_len = expected_data_len
+        checksum_data = frame[:-2]  # 包括时间戳
+    else:
+        # PC下发帧或其他帧：[FC][Func][Data...][Checksum][DF]
+        data_len = len(frame) - 4  # 减去FC、Func、Checksum、DF
+        checksum_data = frame[:-2]
+
+    # 计算并验证校验和
     calculated_checksum = calculate_xor_checksum(checksum_data)
     received_checksum = frame[-2]
 
     if calculated_checksum != received_checksum:
-        print(f"  [警告] 校验和错误: 计算值0x{calculated_checksum:02X}, 接收值0x{received_checksum:02X}")
-        return None
+        frame_obj = ProtocolFrame(func_code, [], 0, frame, is_valid=False)
+        frame_obj.error_msg = f"校验和错误: 计算值0x{calculated_checksum:02X}, 接收值0x{received_checksum:02X}"
+        return frame_obj
 
-    # 解析8字节时间戳（小端序）
-    timestamp_bytes = frame[2+data_len:2+data_len+8]
-    timestamp = int.from_bytes(timestamp_bytes, byteorder='little')
-
-    # 解析数据（所有功能码都使用int16_t）
+    # 解析数据
     num_values = data_len // 2
     data = parse_int16_array(frame[2:2+data_len], num_values)
 
-    return {
-        'func_code': func_code,
-        'func_name': FUNC_NAMES[func_code],
-        'data': data,
-        'timestamp': timestamp,
-        'raw': frame
-    }
+    # 解析时间戳（如果有）
+    tx_timestamp = 0
+    if has_timestamp:
+        tx_timestamp = parse_int64_timestamp(frame[2+data_len:2+data_len+8])
+
+    return ProtocolFrame(func_code, data, tx_timestamp, frame)
 
 
-def format_data(func_code: int, data: list) -> str:
-    """格式化数据为可读字符串"""
-    if func_code == 0x01:  # 电池电压
-        voltage = data[0]  # mV
-        return f"{voltage} mV ({voltage/1000:.2f} V)"
+# ==================== 格式化输出 ====================
 
-    elif func_code == 0x02:  # 编码器：8个int16_t组成4个int32_t
-        # 重构int32值 (小端序: 低16位在前，高16位在后)
-        def to_int32(low, high):
-            val = (high << 16) | (low & 0xFFFF)
-            if val & 0x80000000:  # 处理负数
-                val = val - 0x100000000
-            return val
-        enc_a = to_int32(data[0], data[1])
-        enc_b = to_int32(data[2], data[3])
-        enc_c = to_int32(data[4], data[5])
-        enc_d = to_int32(data[6], data[7])
-        return f"A={enc_a:6d} B={enc_b:6d} C={enc_c:6d} D={enc_d:6d}"
+def format_battery(data: List[int]) -> str:
+    """格式化电池电压数据"""
+    voltage = data[0]  # mV
+    return f"{voltage} mV ({voltage/1000:.2f} V)"
 
-    elif func_code == 0x03:  # IMU数据：欧拉角(3) + 陀螺仪(3) + 加速度(3)
-        # 数据顺序：俯仰、横滚、航向、gyro(x,y,z)、accel(x,y,z)
-        lines = []
-        lines.append(f"Euler   : Pitch={data[0]/100:7.2f}°, Roll={data[1]/100:7.2f}°, Yaw={data[2]/100:7.2f}°")
-        lines.append(f"Gyro    : X={data[3]/100:7.2f},   Y={data[4]/100:7.2f},   Z={data[5]/100:7.2f} rad/s")
-        lines.append(f"Accel   : X={data[6]/100:7.2f},   Y={data[7]/100:7.2f},   Z={data[8]/100:7.2f} G")
-        return "\n         ".join(lines)
 
+def format_encoder(data: List[int]) -> str:
+    """格式化编码器数据"""
+    # 8个int16_t组成4个int32_t
+    enc_a = reconstruct_int32(data[0], data[1])
+    enc_b = reconstruct_int32(data[2], data[3])
+    enc_c = reconstruct_int32(data[4], data[5])
+    enc_d = reconstruct_int32(data[6], data[7])
+    return f"A={enc_a:8d} B={enc_b:8d} C={enc_c:8d} D={enc_d:8d}"
+
+
+def format_imu(data: List[int]) -> str:
+    """格式化IMU数据"""
+    lines = []
+    lines.append(f"欧拉角: Pitch={data[0]/100:7.2f}°, Roll={data[1]/100:7.2f}°, Yaw={data[2]/100:7.2f}°")
+    lines.append(f"陀螺仪: X={data[3]/100:7.2f}, Y={data[4]/100:7.2f}, Z={data[5]/100:7.2f} rad/s")
+    lines.append(f"加速度: X={data[6]/100:7.2f}, Y={data[7]/100:7.2f}, Z={data[8]/100:7.2f} G")
+    return "\n       ".join(lines)
+
+
+def format_ptp_sync(data: List[int]) -> str:
+    """格式化PTP同步数据"""
+    # 4个int16_t组成64位t2时间戳
+    t2 = (data[3] << 48) | (data[2] << 32) | (data[1] << 16) | data[0]
+    return f"t2={t2} us ({t2/1e6:.6f} s)"
+
+
+def format_data(frame: ProtocolFrame) -> str:
+    """根据功能码格式化数据"""
+    if not frame.is_valid:
+        return f"[错误] {frame.error_msg}"
+
+    if frame.func_code == FuncCode.BATTERY_VOLTAGE:
+        return format_battery(frame.data)
+    elif frame.func_code == FuncCode.ENCODER:
+        return format_encoder(frame.data)
+    elif frame.func_code == FuncCode.IMU:
+        return format_imu(frame.data)
+    elif frame.func_code == FuncCode.PTP_SYNC:
+        return format_ptp_sync(frame.data)
     else:
-        return str(data)
+        return str(frame.data)
 
 
 def format_timestamp(tx_timestamp: int, first_timestamp: int) -> str:
-    """格式化时间戳为可读字符串"""
-    # 将微秒转换为毫秒浮点数，保留微秒精度
+    """格式化时间戳"""
+    if tx_timestamp == 0:
+        return "N/A"
     tx_ms = tx_timestamp / 1000.0
-    return f"TX:{tx_ms:.3f}ms"
+    return f"TX:{tx_ms:10.3f}ms"
 
 
-def print_frame(frame_info: dict, show_raw: bool = False, first_timestamp: int = 0):
+def print_frame(frame: ProtocolFrame, show_raw: bool = False, first_timestamp: int = 0):
     """打印帧信息"""
-    func_name = frame_info['func_name']
-    data_str = format_data(frame_info['func_code'], frame_info['data'])
-    tx_timestamp = frame_info.get('timestamp', 0)
+    data_str = format_data(frame)
+    ts_str = format_timestamp(frame.tx_timestamp, first_timestamp)
 
-    ts_str = format_timestamp(tx_timestamp, first_timestamp)
-
-    # 判断是否为多行输出（IMU数据）
+    # 判断是否为多行输出
     if '\n' in data_str:
-        # 多行输出：时间戳只在第一行
-        lines = data_str.split('\n')
-        print(f"[{ts_str}] {func_name}:")
-        for i, line in enumerate(lines):
-            if i == 0:
-                print(f"  {line}")
-            else:
-                print(f"  {line}")
+        print(f"[{ts_str}] {frame.func_name}:")
+        for line in data_str.split('\n'):
+            print(f"  {line}")
     else:
-        # 单行输出
-        print(f"[{ts_str}] {func_name}: {data_str}")
+        print(f"[{ts_str}] {frame.func_name}: {data_str}")
 
     if show_raw:
-        raw_hex = ' '.join(f'{b:02X}' for b in frame_info['raw'])
+        raw_hex = ' '.join(f'{b:02X}' for b in frame.raw)
         print(f"  原始: {raw_hex}")
+
+
+# ==================== 统计模块 ====================
+
+class FrameStats:
+    """帧统计信息"""
+
+    def __init__(self):
+        self.counts = defaultdict(int)
+        self.errors = defaultdict(int)
+        self.last_timestamp = defaultdict(int)
+        self.intervals = defaultdict(list)
+        self.first_time = None
+
+    def update(self, frame: ProtocolFrame):
+        """更新统计"""
+        self.counts[frame.func_code] += 1
+
+        if not frame.is_valid:
+            self.errors[frame.func_code] += 1
+
+        # 计算帧间隔
+        if frame.tx_timestamp > 0:
+            last_ts = self.last_timestamp[frame.func_code]
+            if last_ts > 0:
+                interval = frame.tx_timestamp - last_ts
+                if 0 < interval < 1000000:  # 合理间隔（<1秒）
+                    self.intervals[frame.func_code].append(interval)
+                    if len(self.intervals[frame.func_code]) > 100:
+                        self.intervals[frame.func_code].pop(0)
+            self.last_timestamp[frame.func_code] = frame.tx_timestamp
+
+        if self.first_time is None:
+            self.first_time = time.time()
+
+    def get_frequency(self, func_code: int) -> float:
+        """获取指定功能码的帧频率"""
+        intervals = self.intervals.get(func_code, [])
+        if len(intervals) < 2:
+            return 0.0
+        avg_interval = sum(intervals) / len(intervals)
+        return 1000000.0 / avg_interval if avg_interval > 0 else 0.0
+
+    def print_summary(self):
+        """打印统计摘要"""
+        duration = time.time() - self.first_time if self.first_time else 0
+
+        print("\n" + "="*60)
+        print("统计摘要")
+        print("="*60)
+        print(f"运行时长: {duration:.1f} 秒")
+        print()
+
+        total = sum(self.counts.values())
+        print(f"总帧数: {total}")
+        print()
+
+        for func_code in sorted(self.counts.keys()):
+            count = self.counts[func_code]
+            errors = self.errors.get(func_code, 0)
+            freq = self.get_frequency(func_code)
+            name = FUNC_NAMES.get(func_code, f"未知(0x{func_code:02X})")
+
+            print(f"[{name}]")
+            print(f"  帧数: {count} ({count/duration*100:.1f} fps)" if duration > 0 else f"  帧数: {count}")
+            if freq > 0:
+                print(f"  频率: {freq:.1f} Hz")
+            if errors > 0:
+                print(f"  错误: {errors}")
+
+        print("="*60)
 
 
 # ==================== 串口处理 ====================
@@ -212,11 +353,14 @@ def print_frame(frame_info: dict, show_raw: bool = False, first_timestamp: int =
 class SerialReader:
     """串口读取器"""
 
-    def __init__(self, port: str, baudrate: int = 921600):
+    def __init__(self, port: str, baudrate: int = 115200, debug: bool = False):
         self.port = port
         self.baudrate = baudrate
         self.serial: Optional[serial.Serial] = None
         self.buffer = bytearray()
+        self.stats = FrameStats()
+        self.debug = debug
+        self.raw_bytes_count = 0
 
     def connect(self) -> bool:
         """连接串口"""
@@ -224,7 +368,7 @@ class SerialReader:
             self.serial = serial.Serial(
                 port=self.port,
                 baudrate=self.baudrate,
-                timeout=0.1,  # 100ms超时
+                timeout=0.1,
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE
@@ -241,7 +385,7 @@ class SerialReader:
             self.serial.close()
             print("✓ 已断开连接")
 
-    def read_frames(self) -> list:
+    def read_frames(self) -> List[ProtocolFrame]:
         """读取并解析所有完整帧"""
         if not self.serial or not self.serial.is_open:
             return []
@@ -251,6 +395,12 @@ class SerialReader:
         if not data:
             return []
 
+        # 调试：显示接收到的原始数据
+        if self.debug:
+            self.raw_bytes_count += len(data)
+            print(f"\n[调试] 接收 {len(data)} 字节 (总计: {self.raw_bytes_count})")
+            print(f"  原始: {' '.join(f'{b:02X}' for b in data)}")
+
         self.buffer.extend(data)
         frames = []
 
@@ -259,13 +409,11 @@ class SerialReader:
             # 查找帧头
             header_idx = self.buffer.find(PROTOCOL_HEADER)
             if header_idx == -1:
-                # 没有找到帧头，清空缓冲区
                 self.buffer.clear()
                 break
 
             # 丢弃帧头之前的数据
             if header_idx > 0:
-                print(f"  [警告] 丢弃 {header_idx} 字节无效数据")
                 del self.buffer[:header_idx]
 
             # 检查是否有足够的数据来判断帧长度
@@ -273,9 +421,19 @@ class SerialReader:
                 break
 
             func_code = self.buffer[1]
-            expected_data_len = FUNC_DATA_LENGTHS.get(func_code, 0)
-            # 帧格式：[FC][Func][Data...][TxTimestamp(8B)][Checksum][DF]
-            expected_frame_len = 4 + expected_data_len + TX_TIMESTAMP_LEN  # 包含时间戳
+
+            # 判断帧类型
+            if func_code in MCU_DATA_LENGTHS:
+                # MCU上报帧（带时间戳）
+                expected_data_len = MCU_DATA_LENGTHS[func_code]
+                expected_frame_len = 4 + expected_data_len + TX_TIMESTAMP_LEN
+            else:
+                # PC下发帧或其他帧（不带时间戳）
+                # 需要查找帧尾来确定长度
+                tail_idx = self.buffer.find(PROTOCOL_TAIL, 2)
+                if tail_idx == -1:
+                    break
+                expected_frame_len = tail_idx + 1
 
             # 检查是否收到完整帧
             if len(self.buffer) < expected_frame_len:
@@ -285,13 +443,76 @@ class SerialReader:
             frame = bytes(self.buffer[:expected_frame_len])
             del self.buffer[:expected_frame_len]
 
+            # 调试：显示找到的帧
+            if self.debug:
+                print(f"[调试] 找到帧 (长度: {len(frame)})")
+                print(f"  内容: {' '.join(f'{b:02X}' for b in frame)}")
+
             # 解析帧
-            frame_info = parse_frame(frame)
-            if frame_info:
-                frames.append(frame_info)
+            frame_obj = parse_frame(frame)
+            if frame_obj:
+                if self.debug and not frame_obj.is_valid:
+                    print(f"[调试] 解析失败: {frame_obj.error_msg}")
+                frames.append(frame_obj)
 
         return frames
 
+    def get_stats(self) -> FrameStats:
+        """获取统计信息"""
+        return self.stats
+
+
+# ==================== 数据记录模块 ====================
+
+class DataLogger:
+    """数据记录器"""
+
+    def __init__(self, log_file: Optional[str] = None):
+        self.log_file = log_file
+        self.file_handle = None
+        self.csv_writer = None
+        self.start_time = None
+
+        if log_file:
+            try:
+                self.file_handle = open(log_file, 'w', newline='')
+                self.csv_writer = csv.writer(self.file_handle)
+                # 写入表头
+                self.csv_writer.writerow([
+                    'timestamp', 'func_code', 'func_name',
+                    'data_str', 'tx_timestamp', 'is_valid'
+                ])
+                self.start_time = time.time()
+                print(f"✓ 数据日志: {log_file}")
+            except Exception as e:
+                print(f"✗ 创建日志失败: {e}")
+                self.file_handle = None
+
+    def log(self, frame: ProtocolFrame):
+        """记录一帧数据"""
+        if not self.csv_writer:
+            return
+
+        elapsed = time.time() - self.start_time if self.start_time else 0
+        data_str = ','.join(map(str, frame.data))
+
+        self.csv_writer.writerow([
+            f'{elapsed:.6f}',
+            f'0x{frame.func_code:02X}',
+            frame.func_name,
+            data_str,
+            frame.tx_timestamp,
+            frame.is_valid
+        ])
+
+    def close(self):
+        """关闭日志文件"""
+        if self.file_handle:
+            self.file_handle.close()
+            print(f"✓ 日志已保存")
+
+
+# ==================== 辅助函数 ====================
 
 def list_serial_ports():
     """列出所有可用的串口"""
@@ -314,14 +535,36 @@ def list_serial_ports():
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description='机器人底盘串口数据读取器')
+    parser = argparse.ArgumentParser(
+        description='机器人底盘串口数据读取工具',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  %(prog)s -l                          # 列出可用串口
+  %(prog)s -p /dev/ttyUSB0             # 读取所有数据
+  %(prog)s -p /dev/ttyUSB0 -f imu      # 只显示IMU数据
+  %(prog)s -p /dev/ttyUSB0 -r          # 显示原始数据
+  %(prog)s -p /dev/ttyUSB0 -b 921600   # 高波特率
+  %(prog)s -p /dev/ttyUSB0 -s data.csv # 记录到文件
+
+支持的数据类型:
+  battery   - 电池电压 (0x01)
+  encoder   - 编码器位置 (0x02)
+  imu       - IMU数据 (0x03)
+  ptp       - PTP同步 (0x10)
+        """
+    )
+
     parser.add_argument('-p', '--port', type=str, help='串口设备 (例如: /dev/ttyUSB0 或 COM3)')
-    parser.add_argument('-b', '--baudrate', type=int, default=921600, help='波特率 (默认: 921600)')
+    parser.add_argument('-b', '--baudrate', type=int, default=115200, help='波特率 (默认: 115200)')
     parser.add_argument('-l', '--list', action='store_true', help='列出可用串口')
     parser.add_argument('-r', '--raw', action='store_true', help='显示原始数据')
+    parser.add_argument('-d', '--debug', action='store_true', help='调试模式（显示接收的原始字节）')
     parser.add_argument('-f', '--filter', type=str, nargs='+',
-                       choices=['battery', 'encoder', 'imu'],
+                       choices=['battery', 'encoder', 'imu', 'ptp'],
                        help='只显示指定类型的数据')
+    parser.add_argument('-s', '--save', type=str, help='保存数据到CSV文件')
+    parser.add_argument('--stats', action='store_true', help='显示统计信息')
 
     args = parser.parse_args()
 
@@ -348,43 +591,71 @@ def main():
     filter_codes = None
     if args.filter:
         filter_map = {
-            'battery': 0x01,
-            'encoder': 0x02,
-            'imu': 0x03,
+            'battery': FuncCode.BATTERY_VOLTAGE,
+            'encoder': FuncCode.ENCODER,
+            'imu': FuncCode.IMU,
+            'ptp': FuncCode.PTP_SYNC,
         }
         filter_codes = set(filter_map[f] for f in args.filter)
 
     # 连接串口
-    reader = SerialReader(port, args.baudrate)
+    reader = SerialReader(port, args.baudrate, debug=args.debug)
     if not reader.connect():
         return 1
+
+    # 创建数据记录器
+    logger = DataLogger(args.save)
 
     print("\n开始读取数据 (按Ctrl+C退出)...\n")
 
     try:
         frame_count = 0
-        first_timestamp = 0  # 记录第一个时间戳
+        error_count = 0
+        first_timestamp = 0
+
+        # 定期显示统计
+        last_stats_time = time.time()
+
         while True:
             frames = reader.read_frames()
 
-            for frame_info in frames:
+            for frame in frames:
                 frame_count += 1
+                reader.stats.update(frame)
 
                 # 记录第一个时间戳
-                if first_timestamp == 0:
-                    first_timestamp = frame_info.get('timestamp', 0)
+                if first_timestamp == 0 and frame.tx_timestamp > 0:
+                    first_timestamp = frame.tx_timestamp
+
+                # 统计错误
+                if not frame.is_valid:
+                    error_count += 1
+
+                # 记录到文件
+                logger.log(frame)
 
                 # 应用过滤器
-                if filter_codes and frame_info['func_code'] not in filter_codes:
+                if filter_codes and frame.func_code not in filter_codes:
                     continue
 
                 # 打印帧信息
-                print_frame(frame_info, show_raw=args.raw, first_timestamp=first_timestamp)
+                print_frame(frame, show_raw=args.raw, first_timestamp=first_timestamp)
+
+            # 定期显示统计信息
+            if args.stats and time.time() - last_stats_time >= 5.0:
+                reader.stats.print_summary()
+                last_stats_time = time.time()
 
     except KeyboardInterrupt:
         print(f"\n\n总共接收 {frame_count} 帧数据")
+        if error_count > 0:
+            print(f"错误帧数: {error_count}")
+
+        if args.stats:
+            reader.stats.print_summary()
 
     finally:
+        logger.close()
         reader.disconnect()
 
     return 0
