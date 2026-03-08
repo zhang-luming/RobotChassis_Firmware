@@ -67,22 +67,24 @@ void Motor_Update(void);
 void Motor_SampleEncoders(void);
 
 /**
- * @brief 读取编码器位置并上报
+ * @brief 读取编码器位置数据
  *
  * 功能：
  * - 直接读取当前编码器计数值（16位）
- * - 上报给上位机
+ * - 返回编码器数据供外部合并发送
  *
  * 说明：
  * - 利用16位编码器的自然溢出（65535→0）
  * - 上位机通过计算两次上报的增量得到速度
  * - 节省内存：8字节（4×int16）vs 16字节（4×int32拆分）
  *
+ * @param[out] buffer 输出缓冲区（至少4个int16_t）
+ * @return 数据长度（4个int16_t）
+ *
  * 注意：
  * - 必须先调用 Motor_SampleEncoders()
- * - 使用 DMA 非阻塞发送
  */
-void Motor_ReadAndReport(void);
+uint8_t Motor_ReadAndReport(int16_t *buffer);
 
 /**
  * @brief 执行电机控制

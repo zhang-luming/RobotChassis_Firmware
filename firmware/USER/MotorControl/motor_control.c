@@ -169,30 +169,30 @@ void Motor_SampleEncoders(void) {
 }
 
 /**
- * @brief 读取编码器位置并上报
+ * @brief 读取编码器位置数据
  *
  * 功能：
  * - 直接读取当前编码器计数值（16位）
- * - 上报给上位机
+ * - 返回编码器数据供外部合并发送
  *
  * 优势：
  * - 利用16位编码器的自然溢出（65535→0）
  * - 上位机通过计算两次上报的增量得到速度
  * - 节省内存和时间（无需累积和拆分）
  *
+ * @param[out] buffer 输出缓冲区（至少4个int16_t）
+ * @return 数据长度（4个int16_t）
+ *
  * 注意：
  * - 必须先调用 Motor_SampleEncoders()
- * - 通过DMA非阻塞发送
  */
-void Motor_ReadAndReport(void) {
+uint8_t Motor_ReadAndReport(int16_t *buffer) {
   /* 直接使用上次采样的编码器计数值 */
-  int16_t tx_data[4];
   for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
-    tx_data[i] = (int16_t)g_sample_last[i];
+    buffer[i] = (int16_t)g_sample_last[i];
   }
 
-  /* 使用DMA发送队列发送编码器数据（4个int16） */
-  Comm_SendDataFrameDMA(FUNC_ENCODER, tx_data, 4);
+  return 4; /* 返回4个int16_t */
 }
 
 /**
@@ -226,7 +226,6 @@ void Motor_UpdateControl(void) {
  *
  * 功能：
  * - 采样编码器
- * - 上报编码器位置
  * - 执行PID控制
  *
  * 优势：
@@ -236,12 +235,11 @@ void Motor_UpdateControl(void) {
  *
  * 注意：
  * - 此函数在IMU中断（100Hz）中调用
- * - 替代分别调用 SampleEncoders + ReadAndReport + UpdateControl
+ * - 编码器数据上报由IMU模块合并发送
  */
 void Motor_Update(void) {
   Motor_SampleEncoders();    /* 1. 统一采样编码器 */
-  Motor_ReadAndReport();     /* 2. 上报编码器位置 */
-  Motor_UpdateControl();     /* 3. 执行PID控制 */
+  Motor_UpdateControl();     /* 2. 执行PID控制 */
 }
 
 /**

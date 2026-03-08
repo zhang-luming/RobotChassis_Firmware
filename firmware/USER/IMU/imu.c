@@ -18,6 +18,7 @@
 
 #include "imu.h"
 #include "comm_protocol.h"
+#include "motor_control.h"
 #include "user_config.h"
 #include "mpu6050.h"
 #include "inv_mpu.h"
@@ -157,11 +158,11 @@ void IMU_IRQHandler(void) {
     /* 更新上次中断时间戳（用于调试） */
     s_last_irq_timestamp_us = current_timestamp;
 
-    /* 读取并上报IMU数据 */
+    /* 读取并上报传感器数据（编码器 + IMU） */
     IMU_UpdateAndPublish();
 
-    /* 电机模块统一更新：采样编码器 + 上报位置 + PID控制 */
-    Motor_Update();
+    /* 电机模块PID控制（编码器采样已在UpdateAndPublish中完成） */
+    Motor_UpdateControl();
 }
 
 /**
@@ -180,40 +181,44 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 /* ==================== 私有函数实现 ==================== */
 
 /**
- * @brief 更新并发布IMU数据
+ * @brief 更新并发布传感器数据（编码器 + IMU）
  *
  * 数据获取：
  * - 欧拉角：从DMP FIFO获取（四元数解算，6轴传感器融合）
  * - 陀螺仪：同时获取寄存器原始数据和DMP校准数据
  * - 加速度：同时获取寄存器原始数据和DMP原始数据
+ * - 编码器：从电机模块获取4路编码器位置
  *
  * 发送数据源选择：
  * - IMU_USE_DMP_CALIBRATED_DATA=1: 发送DMP校准数据（推荐）
  * - IMU_USE_DMP_CALIBRATED_DATA=0: 发送寄存器原始数据
  *
- * 帧结构（30字节）：
- * - [FC][0x03][欧拉角3][陀螺仪3][加速度3][时间戳8][校验][DF]
- * - 数据顺序：俯仰、横滚、航向、gyro(x,y,z)、accel(x,y,z)
+ * 帧结构（38字节）：
+ * - [FC][0x02][编码器4][IMU数据9][时间戳8][校验][DF]
+ * - 数据顺序：编码器(4) + 俯仰、横滚、航向、gyro(x,y,z)、accel(x,y,z)
  */
 static void IMU_UpdateAndPublish(void) {
     short dmp_gyro[3], dmp_acc[3];    /* DMP数据（已从FIFO读取） */
     short reg_gyro[3], reg_acc[3];    /* 寄存器原始数据 */
     int32_t temp;
     uint8_t i;
-    int16_t imu_data[9];              /* 合并数据缓冲：欧拉角(3) + 陀螺仪(3) + 加速度(3) */
+    int16_t sensor_data[13];          /* 合并数据缓冲：编码器(4) + IMU(9) */
 
-    /* ========== 1. 从DMP FIFO获取欧拉角 + 传感器数据 ========== */
+    /* ========== 1. 采样编码器（统一采样点） ========== */
+    Motor_SampleEncoders();
+
+    /* ========== 2. 从DMP FIFO获取欧拉角 + 传感器数据 ========== */
     if (mpu_dmp_get_data(&s_pitch, &s_roll, &s_yaw,
                          dmp_gyro, dmp_acc) != 0) {
         return;  /* DMP数据未就绪，直接返回 */
     }
 
-    /* ========== 2. 转换姿态角 ========== */
+    /* ========== 3. 转换姿态角 ========== */
     s_euler_angle[0] = (int16_t)(s_pitch * 100);
     s_euler_angle[1] = (int16_t)(s_roll  * 100);
     s_euler_angle[2] = (int16_t)(s_yaw   * 100);
 
-    /* ========== 3. 保存DMP数据（已校准） ========== */
+    /* ========== 4. 保存DMP数据（已校准） ========== */
     /* DMP陀螺仪数据：单位与原始数据相同，需转换为0.01弧度/s */
     for (i = 0; i < 3; i++) {
         temp = ((int32_t)dmp_gyro[i] * GYRO_SCALE_NUM) / GYRO_SCALE_DEN;
@@ -226,7 +231,7 @@ static void IMU_UpdateAndPublish(void) {
         s_acc_dmp[i] = (int16_t)temp;
     }
 
-    /* ========== 4. 读取寄存器原始数据（保留用于对比） ========== */
+    /* ========== 5. 读取寄存器原始数据（保留用于对比） ========== */
     /* 读取陀螺仪寄存器原始数据（未去除零偏） */
     if (MPU_Get_Gyroscope(&reg_gyro[0], &reg_gyro[1], &reg_gyro[2]) == 0) {
         for (i = 0; i < 3; i++) {
@@ -245,29 +250,34 @@ static void IMU_UpdateAndPublish(void) {
 
     s_data_valid = 1;
 
-    /* ========== 5. 选择数据源并发送 ========== */
-    imu_data[0] = s_euler_angle[0];  /* 俯仰角 */
-    imu_data[1] = s_euler_angle[1];  /* 横滚角 */
-    imu_data[2] = s_euler_angle[2];  /* 航向角 */
+    /* ========== 6. 准备合并数据 ========== */
+    /* 6.1 编码器数据（前4个int16） */
+    Motor_ReadAndReport(sensor_data);  /* 读取4个编码器值到buffer */
+
+    /* 6.2 IMU数据（后9个int16） */
+    sensor_data[4] = s_euler_angle[0];  /* 俯仰角 */
+    sensor_data[5] = s_euler_angle[1];  /* 横滚角 */
+    sensor_data[6] = s_euler_angle[2];  /* 航向角 */
 
 #if IMU_USE_DMP_CALIBRATED_DATA
     /* 使用DMP校准数据（陀螺仪零偏已自动消除） */
-    imu_data[3] = s_gyro_dmp[0];    /* 陀螺仪 X（已校准） */
-    imu_data[4] = s_gyro_dmp[1];    /* 陀螺仪 Y（已校准） */
-    imu_data[5] = s_gyro_dmp[2];    /* 陀螺仪 Z（已校准） */
-    imu_data[6] = s_acc_dmp[0];     /* 加速度 X */
-    imu_data[7] = s_acc_dmp[1];     /* 加速度 Y */
-    imu_data[8] = s_acc_dmp[2];     /* 加速度 Z */
+    sensor_data[7] = s_gyro_dmp[0];    /* 陀螺仪 X（已校准） */
+    sensor_data[8] = s_gyro_dmp[1];    /* 陀螺仪 Y（已校准） */
+    sensor_data[9] = s_gyro_dmp[2];    /* 陀螺仪 Z（已校准） */
+    sensor_data[10] = s_acc_dmp[0];    /* 加速度 X */
+    sensor_data[11] = s_acc_dmp[1];    /* 加速度 Y */
+    sensor_data[12] = s_acc_dmp[2];    /* 加速度 Z */
 #else
     /* 使用寄存器原始数据（未去除零偏） */
-    imu_data[3] = s_gyro_raw[0];    /* 陀螺仪 X（原始） */
-    imu_data[4] = s_gyro_raw[1];    /* 陀螺仪 Y（原始） */
-    imu_data[5] = s_gyro_raw[2];    /* 陀螺仪 Z（原始） */
-    imu_data[6] = s_acc_raw[0];     /* 加速度 X */
-    imu_data[7] = s_acc_raw[1];     /* 加速度 Y */
-    imu_data[8] = s_acc_raw[2];     /* 加速度 Z */
+    sensor_data[7] = s_gyro_raw[0];    /* 陀螺仪 X（原始） */
+    sensor_data[8] = s_gyro_raw[1];    /* 陀螺仪 Y（原始） */
+    sensor_data[9] = s_gyro_raw[2];    /* 陀螺仪 Z（原始） */
+    sensor_data[10] = s_acc_raw[0];    /* 加速度 X */
+    sensor_data[11] = s_acc_raw[1];    /* 加速度 Y */
+    sensor_data[12] = s_acc_raw[2];    /* 加速度 Z */
 #endif
 
-    /* 使用DMA发送队列发送合并的IMU数据帧（9个int16_t = 18字节数据） */
-    Comm_SendDataFrameDMA(FUNC_IMU, imu_data, 9);
+    /* ========== 7. 使用DMA发送队列发送合并的传感器数据帧 ========== */
+    /* 13个int16_t = 26字节数据 */
+    Comm_SendDataFrameDMA(0x20, sensor_data, 13);
 }

@@ -50,19 +50,14 @@ PROTOCOL_TAIL = 0xDF
 
 # 功能码定义
 class FuncCode:
-    BATTERY_VOLTAGE = 0x01  # 电池电压 (MCU→PC)
-    ENCODER = 0x02          # 编码器位置 (MCU→PC)
-    IMU = 0x03              # IMU合并数据 (MCU→PC)
+    SENSOR_MERGED = 0x20    # 合并传感器数据（编码器4 + IMU9）(MCU→PC)
     MOTOR_SPEED = 0x04      # 电机目标速度 (PC→MCU)
     PID_PARAM = 0x05        # PID参数设置 (PC→MCU)
-    SERVO_CONTROL = 0x06    # 舵机控制 (PC→MCU, 待实现)
     PTP_SYNC = 0x10         # PTP时间同步 (双向)
 
 # 功能码名称映射
 FUNC_NAMES = {
-    FuncCode.BATTERY_VOLTAGE: "电池电压",
-    FuncCode.ENCODER: "编码器",
-    FuncCode.IMU: "IMU数据",
+    FuncCode.SENSOR_MERGED: "传感器数据",
     FuncCode.MOTOR_SPEED: "电机速度",  # PC→MCU
     FuncCode.PID_PARAM: "PID参数",    # PC→MCU
     FuncCode.PTP_SYNC: "PTP同步",
@@ -70,10 +65,8 @@ FUNC_NAMES = {
 
 # MCU上报数据的数据长度定义（字节数，不包括8字节时间戳）
 MCU_DATA_LENGTHS = {
-    FuncCode.BATTERY_VOLTAGE: 2,    # 1×int16
-    FuncCode.ENCODER: 8,            # 4×int16（编码器位置）
-    FuncCode.IMU: 18,               # 9×int16
-    FuncCode.PTP_SYNC: 8,           # 4×int16 → t2时间戳
+    FuncCode.SENSOR_MERGED: 26,      # 13×int16（编码器4 + IMU9）
+    FuncCode.PTP_SYNC: 8,            # 4×int16 → t2时间戳
 }
 
 TX_TIMESTAMP_LEN = 8  # 发送时间戳固定8字节
@@ -229,17 +222,51 @@ def format_ptp_sync(data: List[int]) -> str:
     return f"t2={t2} us ({t2/1e6:.6f} s)"
 
 
+def format_encoder(data: List[int]) -> str:
+    """格式化编码器数据"""
+    # data包含4个int16_t：电机A/B/C/D的编码器位置
+    # 上位机自行处理溢出（65535→0）
+    return f"A={data[0]:6d} B={data[1]:6d} C={data[2]:6d} D={data[3]:6d}"
+
+
+def format_imu(data: List[int]) -> str:
+    """格式化IMU数据"""
+    lines = []
+    lines.append(f"欧拉角: Pitch={data[0]/100:7.2f}°, Roll={data[1]/100:7.2f}°, Yaw={data[2]/100:7.2f}°")
+    lines.append(f"陀螺仪: X={data[3]/100:7.2f}, Y={data[4]/100:7.2f}, Z={data[5]/100:7.2f} rad/s")
+    lines.append(f"加速度: X={data[6]/100:7.2f}, Y={data[7]/100:7.2f}, Z={data[8]/100:7.2f} G")
+    return "\n       ".join(lines)
+
+
+def format_sensor_merged(data: List[int]) -> str:
+    """格式化合并传感器数据（编码器4 + IMU9）"""
+    lines = []
+
+    # 编码器数据（前4个int16）
+    enc_str = format_encoder(data[:4])
+    lines.append(f"编码器: {enc_str}")
+
+    # IMU数据（后9个int16）
+    imu_str = format_imu(data[4:13])
+    lines.append(f"IMU:    {imu_str}")
+
+    return "\n       ".join(lines)
+
+
+def format_ptp_sync(data: List[int]) -> str:
+    """格式化PTP同步数据"""
+    # 4个int16_t组成64位t2时间戳
+    t2 = (data[3] << 48) | (data[2] << 32) | (data[1] << 16) | data[0]
+    return f"t2={t2} us ({t2/1e6:.6f} s)"
+
+
 def format_data(frame: ProtocolFrame) -> str:
     """根据功能码格式化数据"""
     if not frame.is_valid:
         return f"[错误] {frame.error_msg}"
 
-    if frame.func_code == FuncCode.BATTERY_VOLTAGE:
-        return format_battery(frame.data)
-    elif frame.func_code == FuncCode.ENCODER:
-        return format_encoder(frame.data)
-    elif frame.func_code == FuncCode.IMU:
-        return format_imu(frame.data)
+    if frame.func_code == FuncCode.SENSOR_MERGED:
+        return format_sensor_merged(frame.data)
     elif frame.func_code == FuncCode.PTP_SYNC:
         return format_ptp_sync(frame.data)
     else:
@@ -537,16 +564,14 @@ def main():
 示例:
   %(prog)s -l                          # 列出可用串口
   %(prog)s -p /dev/ttyUSB0             # 读取所有数据
-  %(prog)s -p /dev/ttyUSB0 -f imu      # 只显示IMU数据
+  %(prog)s -p /dev/ttyUSB0 -f sensor   # 只显示传感器数据
   %(prog)s -p /dev/ttyUSB0 -r          # 显示原始数据
   %(prog)s -p /dev/ttyUSB0 -b 921600   # 高波特率
   %(prog)s -p /dev/ttyUSB0 -s data.csv # 记录到文件
 
 支持的数据类型:
-  battery   - 电池电压 (0x01)
-  encoder   - 编码器位置 (0x02)
-  imu       - IMU数据 (0x03)
-  ptp       - PTP同步 (0x10)
+  sensor   - 传感器数据（编码器+IMU）(0x20)
+  ptp      - PTP同步 (0x10)
         """
     )
 
@@ -586,9 +611,7 @@ def main():
     filter_codes = None
     if args.filter:
         filter_map = {
-            'battery': FuncCode.BATTERY_VOLTAGE,
-            'encoder': FuncCode.ENCODER,
-            'imu': FuncCode.IMU,
+            'sensor': FuncCode.SENSOR_MERGED,
             'ptp': FuncCode.PTP_SYNC,
         }
         filter_codes = set(filter_map[f] for f in args.filter)

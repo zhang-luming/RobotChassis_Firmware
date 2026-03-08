@@ -34,8 +34,7 @@ PROTOCOL_HEADER = 0xFC
 PROTOCOL_TAIL = 0xDF
 
 FUNC_MOTOR_SPEED = 0x04
-FUNC_ENCODER = 0x02
-FUNC_IMU = 0x03
+FUNC_SENSOR_MERGED = 0x20  # 合并传感器数据（编码器4 + IMU9）
 
 BAUD_RATE = 921600
 
@@ -80,51 +79,39 @@ def build_motor_speed_frame(speeds: List[int]) -> bytes:
     return bytes(frame)
 
 
-def parse_encoder_frame(frame: bytes) -> Optional[List[int]]:
+def parse_sensor_merged_frame(frame: bytes) -> Optional[dict]:
     """
-    解析编码器上报帧
+    解析合并传感器数据帧（编码器 + IMU）
 
-    帧格式：[FC][0x02][位置A][位置B][位置C][位置D][时间戳8B][校验][DF]
-           0    1     2字节  2字节 2字节  2字节
+    帧格式：[FC][0x02][编码器4×int16][IMU 9×int16][时间戳8B][校验][DF]
+           0    1     2-10字节        10-28字节
 
     Returns:
-        4个电机的编码器位置 (int16，0-65535，自然溢出) 或 None
+        包含编码器位置和IMU数据的字典 或 None
     """
-    if len(frame) < 14:  # 最小帧长度：1+1+8+8+1+1=14
+    if len(frame) < 38:  # 最小帧长度：1+1+26+8+1+1=38
         return None
 
-    if frame[0] != PROTOCOL_HEADER or frame[1] != FUNC_ENCODER:
+    if frame[0] != PROTOCOL_HEADER or frame[1] != FUNC_SENSOR_MERGED:
         return None
 
-    # 提取数据部分（4个int16）
-    data = frame[2:10]
-    positions = list(struct.unpack('<4h', data))  # 4个小端序int16
+    # 数据部分：13个int16（编码器4 + IMU9）
+    data = frame[2:28]
+    values = struct.unpack('<13h', data)  # 13个小端序int16
 
-    # 转换为正数（uint16范围）
-    return [p & 0xFFFF for p in positions]
+    # 提取编码器数据（前4个int16）
+    positions = [v & 0xFFFF for v in values[0:4]]
 
-
-def parse_imu_frame(frame: bytes) -> Optional[dict]:
-    """
-    解析IMU上报帧
-
-    Returns:
-        包含欧拉角、陀螺仪、加速度的字典
-    """
-    if len(frame) < 30:
-        return None
-
-    if frame[0] != PROTOCOL_HEADER or frame[1] != FUNC_IMU:
-        return None
-
-    # 数据部分：9个int16（欧拉角3 + 陀螺仪3 + 加速度3）
-    data = frame[2:20]
-    values = struct.unpack('<9h', data)  # 9个小端序int16
+    # 提取IMU数据（后9个int16）
+    imu_values = values[4:13]
 
     return {
-        'euler': {'pitch': values[0] / 100.0, 'roll': values[1] / 100.0, 'yaw': values[2] / 100.0},
-        'gyro': {'x': values[3] / 100.0, 'y': values[4] / 100.0, 'z': values[5] / 100.0},
-        'accel': {'x': values[6] / 100.0, 'y': values[7] / 100.0, 'z': values[8] / 100.0}
+        'encoder': positions,
+        'imu': {
+            'euler': {'pitch': imu_values[0] / 100.0, 'roll': imu_values[1] / 100.0, 'yaw': imu_values[2] / 100.0},
+            'gyro': {'x': imu_values[3] / 100.0, 'y': imu_values[4] / 100.0, 'z': imu_values[5] / 100.0},
+            'accel': {'x': imu_values[6] / 100.0, 'y': imu_values[7] / 100.0, 'z': imu_values[8] / 100.0}
+        }
     }
 
 
@@ -142,6 +129,8 @@ class MotorTester:
         self.last_time = None
         self.actual_speeds = [0.0, 0.0, 0.0, 0.0]
         self.first_sample = True  # 标记第一次采样
+        self.print_count = 0      # 打印计数器（用于控制IMU显示频率）
+        self.print_count = 0      # 打印计数器（用于控制IMU显示频率）
 
     def connect(self):
         """连接串口"""
@@ -194,12 +183,9 @@ class MotorTester:
             func_code = self.buffer[1]
 
             # 根据功能码确定数据长度
-            if func_code == FUNC_ENCODER:
-                data_len = 8   # 4个int16 = 8字节（新格式）
-                total_len = 2 + data_len + 8 + 2  # FC+Func+Data+Timestamp+Checksum+DF = 20
-            elif func_code == FUNC_IMU:
-                data_len = 18  # 9个int16 = 18字节
-                total_len = 2 + data_len + 8 + 2  # FC+Func+Data+Timestamp+Checksum+DF = 30
+            if func_code == FUNC_SENSOR_MERGED:
+                data_len = 26  # 13个int16 = 26字节（编码器4 + IMU9）
+                total_len = 2 + data_len + 8 + 2  # FC+Func+Data+Timestamp+Checksum+DF = 38
             else:
                 # 未知功能码，跳过
                 del self.buffer[0:1]
@@ -218,14 +204,11 @@ class MotorTester:
                 continue
 
             # 解析帧
-            if func_code == FUNC_ENCODER:
-                positions = parse_encoder_frame(frame)
-                if positions:
-                    frames['encoder'] = positions
-            elif func_code == FUNC_IMU:
-                imu_data = parse_imu_frame(frame)
-                if imu_data:
-                    frames['imu'] = imu_data
+            if func_code == FUNC_SENSOR_MERGED:
+                sensor_data = parse_sensor_merged_frame(frame)
+                if sensor_data:
+                    frames['encoder'] = sensor_data['encoder']
+                    frames['imu'] = sensor_data['imu']
 
         return frames
 
@@ -267,36 +250,24 @@ class MotorTester:
     def print_status(self, target_speeds: List[int], positions: List[int],
                      actual_speeds: List[float], imu_data: Optional[dict] = None):
         """打印状态信息"""
-        print("\r" + " " * 120, end="")  # 清除行
+        self.print_count += 1
 
-        # 编码器位置
-        pos_str = ', '.join(f'{p:>10}' for p in positions)
-        print(f"\r[编码器] [{pos_str}]", end="")
+        # 使用ANSI转义码清屏并移动到顶部
+        if self.print_count > 1:
+            # 向上移动4行到电机输出区域
+            print("\033[4A", end="")
 
-        # 目标速度 vs 实际速度
-        speed_line = "\n       "
+        # 打印电机状态
         for i in range(4):
+            pos = positions[i]
             target = target_speeds[i]
             actual = actual_speeds[i]
+
+            # 计算误差百分比
             error = actual - target
             error_pct = (error / target * 100) if target != 0 else 0
 
-            # 检测未连接的编码器（位置始终为0）
-            if target != 0 and actual == 0 and positions[i] == 0:
-                status = "⚠ 未连接"
-            elif abs(error) < 50:
-                status = "✓"
-            else:
-                status = "→"
-
-            speed_line += f"  [{i}] {target:>5} → {actual:>6.1f} CPS ({error_pct:>+6.1f}%) {status}"
-
-        print(speed_line, end="")
-
-        # IMU数据（如果有）
-        if imu_data:
-            euler = imu_data['euler']
-            print(f"    [IMU] Pitch={euler['pitch']:>6.2f}°, Roll={euler['roll']:>6.2f}°, Yaw={euler['yaw']:>7.2f}°", end="")
+            print(f"[{i}] 位置:{pos:>6}  目标:{target:>6}  实际:{actual:>7.1f}  误差:{error_pct:>+7.1f}%")
 
         sys.stdout.flush()
 

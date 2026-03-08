@@ -24,17 +24,17 @@ extern "C" {
 #include "main.h"
 
 /* ==================== 协议定义 ==================== */
-#define PROTOCOL_HEADER   0xFC  /* 帧头 */
-#define PROTOCOL_TAIL     0xDF  /* 帧尾 */
+#define PROTOCOL_HEADER 0xFC /* 帧头 */
+#define PROTOCOL_TAIL 0xDF   /* 帧尾 */
 
 /* 功能码定义 */
-#define FUNC_ENCODER          0x02  /* 编码器位置（4×int16，直接上报计数器值） */
-#define FUNC_IMU              0x03  /* IMU合并数据（欧拉角+陀螺仪+加速度） */
-#define FUNC_MOTOR_SPEED      0x04  /* 电机目标速度 */
-#define FUNC_PID_PARAM        0x05  /* PID参数设置 */
-#define FUNC_PTP_SYNC         0x10  /* PTP时间同步 */
+#define FUNC_PTP_SYNC 0x10      /* PTP时间同步 */
+#define FUNC_SENSOR_MERGED 0x20 /* 传感器数据(IMU + 编码器) */
 
-#define RX_BUFFER_SIZE        256   /* 接收缓冲区大小 */
+#define FUNC_MOTOR_SPEED 0x04 /* 电机目标速度 */
+#define FUNC_PID_PARAM 0x05   /* PID参数设置 */
+
+#define RX_BUFFER_SIZE 256 /* 接收缓冲区大小 */
 
 /* ==================== PTP时间同步协议 ==================== */
 
@@ -58,12 +58,11 @@ extern "C" {
  * - 上位机计算：offset = ((t2+g_offset - t1) - (t4 - (t3+g_offset))) / 2
  */
 
-#define PTP_SYNC_REQUEST      0x01  /* PTP同步请求消息类型 */
+#define PTP_SYNC_REQUEST 0x01 /* PTP同步请求消息类型 */
 
 /* ==================== 旧协议定义（保留兼容性） ==================== */
 
 /* ==================== 类型定义 ==================== */
-
 
 /* 串口发送缓冲 - 增大到128字节以支持更长的数据帧 */
 extern uint8_t UART_SEND_BUF[128];
@@ -75,12 +74,12 @@ extern uint8_t UART_SEND_BUF[128];
  */
 
 #define DMA_TX_QUEUE_SIZE 4  /* 队列深度：4帧 */
-#define DMA_TX_FRAME_SIZE 64  /* 每帧最大长度 */
+#define DMA_TX_FRAME_SIZE 64 /* 每帧最大长度 */
 
 /* DMA发送帧结构 */
 typedef struct {
-    uint8_t data[DMA_TX_FRAME_SIZE];  /* 帧数据 */
-    uint8_t len;                      /* 帧长度 */
+  uint8_t data[DMA_TX_FRAME_SIZE]; /* 帧数据 */
+  uint8_t len;                     /* 帧长度 */
 } DmaTxFrame_t;
 
 /* ==================== 核心接口 ==================== */
@@ -124,9 +123,6 @@ void Comm_SendBuf(USART_TypeDef *USART_COM, uint8_t *buf, uint16_t len);
  *
  * 自动打包协议帧：[0xFC][FuncCode][Data...][TxTimestamp][Checksum][0xDF]
  *
- * @示例
- * - Comm_SendDataFrame(FUNC_IMU, imu_data, 9);          // 9个int16_t
- * - Comm_SendDataFrame(FUNC_ENCODER, encoders, 8);      // 8个int16_t
  */
 void Comm_SendDataFrame(uint8_t func_code, int16_t *data, uint8_t data_len);
 
@@ -137,14 +133,9 @@ void Comm_SendDataFrame(uint8_t func_code, int16_t *data, uint8_t data_len);
  * @param data_len 数据长度（int16_t个数）
  * @return HAL_OK=成功入队，HAL_ERROR=队列已满
  *
- * 使用DMA传输+发送队列，CPU立即返回。适用于周期性大数据量发送（IMU、编码器等）
- *
- * @示例
- *   // 在IMU中断中调用
- *   Comm_SendDataFrameDMA(FUNC_IMU, imu_data, 9);
- *   Comm_SendDataFrameDMA(FUNC_ENCODER, encoder_data, 4);  // 4个int16 (编码器位置)
  */
-HAL_StatusTypeDef Comm_SendDataFrameDMA(uint8_t func_code, int16_t *data, uint8_t data_len);
+HAL_StatusTypeDef Comm_SendDataFrameDMA(uint8_t func_code, int16_t *data,
+                                        uint8_t data_len);
 
 /**
  * @brief 串口接收中断回调
@@ -152,7 +143,6 @@ HAL_StatusTypeDef Comm_SendDataFrameDMA(uint8_t func_code, int16_t *data, uint8_
  * @note 在HAL_UART_RxCpltCallback中调用
  */
 void Comm_RxCallback(UART_HandleTypeDef *huart);
-
 
 #ifdef __cplusplus
 }
