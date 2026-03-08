@@ -2,9 +2,12 @@
 // License: MIT
 
 #include "robot_chassis_driver/robot_chassis_node.hpp"
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <cmath>
 #include <algorithm>
 #include <vector>
+#include <thread>
 
 using namespace std::chrono_literals;
 
@@ -22,6 +25,14 @@ RobotChassisNode::RobotChassisNode()
       ptp_integral_(0.0),
       ptp_converged_(false),
       sensor_frame_count_(0),
+      last_mcu_timestamp_(0),
+      encoders_initialized_(false),
+      odom_x_(0.0),
+      odom_y_(0.0),
+      odom_theta_(0.0),
+      last_path_x_(0.0),
+      last_path_y_(0.0),
+      last_path_theta_(0.0),
       ptp_seq_(0) {
 
   // 声明参数
@@ -51,8 +62,24 @@ RobotChassisNode::RobotChassisNode()
       "cmd_vel", 10,
       std::bind(&RobotChassisNode::cmdVelCallback, this, std::placeholders::_1));
 
+  // 创建里程计发布者
+  odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>("wheel_odom", 10);
+  path_pub_ = this->create_publisher<nav_msgs::msg::Path>("wheel_odom_path", 10);
+  tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
+
+  // 初始化编码器历史
+  for (int i = 0; i < 4; i++) {
+    last_encoders_[i] = 0;
+  }
+
+  // 初始化轨迹消息
+  odom_path_.header.frame_id = "wheel_odom";
+
   // 启动串口读取线程
   read_thread_ = std::thread(&RobotChassisNode::serialReadThread, this);
+
+  // 启动消息发布线程
+  publish_thread_ = std::thread(&RobotChassisNode::publishThread, this);
 
   RCLCPP_INFO(this->get_logger(), "RobotChassis节点已启动");
   RCLCPP_INFO(this->get_logger(), "串口: %s, 波特率: %d", port_.c_str(), baudrate_);
@@ -67,6 +94,9 @@ RobotChassisNode::~RobotChassisNode() {
   running_ = false;
   if (read_thread_.joinable()) {
     read_thread_.join();
+  }
+  if (publish_thread_.joinable()) {
+    publish_thread_.join();
   }
   if (ser_.isOpen()) {
     ser_.close();
@@ -389,22 +419,14 @@ void RobotChassisNode::handleSensorFrame(const std::vector<uint8_t>& frame) {
   }
 
   // 解析加速度（3个int16，小端序，索引22-27），单位：0.01g
-  for (int i = 0; i < 3; i++) {
+  for (int i = 0; i < 6; i++) {
     sensor_data.accel[i] = to_int16_le(frame[22 + i*2], frame[22 + i*2 + 1]);
   }
 
   sensor_frame_count_++;
 
-  // 每100帧打印一次传感器数据（100Hz → 1Hz日志频率）
-  if (sensor_frame_count_ % 100 == 0) {
-    RCLCPP_INFO(this->get_logger(), "[传感器 #%d]", sensor_frame_count_);
-    RCLCPP_INFO(this->get_logger(), "  编码器: [%d, %d, %d, %d]",
-                sensor_data.encoders[0], sensor_data.encoders[1],
-                sensor_data.encoders[2], sensor_data.encoders[3]);
-    RCLCPP_INFO(this->get_logger(), "  欧拉角(°): [%.2f, %.2f, %.2f]",
-                sensor_data.euler[0] / 100.0, sensor_data.euler[1] / 100.0,
-                sensor_data.euler[2] / 100.0);
-  }
+  // 推入队列，供发布线程消费
+  sensor_queue_.push(sensor_data);
 }
 
 // ==================== 电机控制 ====================
@@ -488,4 +510,174 @@ void RobotChassisNode::sendMotorSpeedCommand(const std::vector<int16_t>& speeds)
   } catch (serial::SerialException& e) {
     RCLCPP_ERROR(this->get_logger(), "发送电机指令失败: %s", e.what());
   }
+}
+
+// ==================== 消息发布线程 ====================
+
+void RobotChassisNode::publishThread() {
+  RCLCPP_INFO(this->get_logger(), "消息发布线程已启动");
+
+  RawSensorData sensor_data;
+
+  while (running_ && rclcpp::ok()) {
+    // 从队列中取出传感器数据
+    if (sensor_queue_.pop(sensor_data)) {
+      // 发布里程计数据
+      publishOdometry(sensor_data);
+
+      // 将来可以在这里添加IMU消息发布
+      // publishIMU(sensor_data);
+    } else {
+      // 队列为空，休眠1ms
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }
+
+  RCLCPP_INFO(this->get_logger(), "消息发布线程已退出");
+}
+
+// ==================== 里程计发布 ====================
+
+void RobotChassisNode::publishOdometry(const RawSensorData& sensor_data) {
+  // 第一次数据：初始化编码器基准值
+  if (!encoders_initialized_) {
+    for (int i = 0; i < 4; i++) {
+      last_encoders_[i] = sensor_data.encoders[i];
+    }
+    last_mcu_timestamp_ = sensor_data.timestamp_us;
+    encoders_initialized_ = true;
+    return;  // 跳过第一次数据
+  }
+
+  // 计算时间差（秒）
+  int64_t delta_time_us = sensor_data.timestamp_us - last_mcu_timestamp_;
+  if (delta_time_us <= 0) {
+    // 时间戳异常，跳过本次更新
+    return;
+  }
+  double dt = delta_time_us / 1000000.0;  // 微秒转秒
+  last_mcu_timestamp_ = sensor_data.timestamp_us;
+
+  // 计算编码器增量（处理16位溢出）
+  int32_t delta_encoders[4];
+  for (int i = 0; i < 4; i++) {
+    int16_t delta = sensor_data.encoders[i] - last_encoders_[i];
+    // 处理溢出（int16_t范围：-32768~32767）
+    if (delta < -32767) {
+      delta += 65536;
+    }
+    delta_encoders[i] = delta;
+    last_encoders_[i] = sensor_data.encoders[i];
+  }
+
+  // A、B电机连接，A是右轮，B是左轮
+  // 注意：B电机编码器方向相反，需要取反
+  double right_counts = static_cast<double>(delta_encoders[0]);   // 电机A（右轮）
+  double left_counts = -static_cast<double>(delta_encoders[1]);  // 电机B（左轮，取反）
+
+  // 计算左右轮线位移增量
+  // 距离增量 = counts / PPR × 轮周长
+  double wheel_circumference = 2.0 * M_PI * wheel_radius_;
+  double right_delta = right_counts / encoder_ppr_ * wheel_circumference;
+  double left_delta = left_counts / encoder_ppr_ * wheel_circumference;
+
+  // 差速驱动里程计计算
+  double delta_distance = (left_delta + right_delta) / 2.0;
+  double delta_theta = (right_delta - left_delta) / wheelbase_;
+
+  // 更新位姿
+  odom_x_ += delta_distance * std::cos(odom_theta_);
+  odom_y_ += delta_distance * std::sin(odom_theta_);
+  odom_theta_ += delta_theta;
+
+  // 归一化角度到[-π, π]
+  while (odom_theta_ > M_PI) odom_theta_ -= 2.0 * M_PI;
+  while (odom_theta_ < -M_PI) odom_theta_ += 2.0 * M_PI;
+
+  // 将MCU时间戳转换为ROS时间
+  rclcpp::Time ros_time = rclcpp::Time(
+      (sensor_data.timestamp_us + g_offset_) * 1000);  // 微秒转纳秒
+
+  // 构造里程计消息
+  nav_msgs::msg::Odometry odom_msg;
+  odom_msg.header.stamp = ros_time;
+  odom_msg.header.frame_id = "wheel_odom";
+  odom_msg.child_frame_id = "wheel_base_link";
+
+  // 位置
+  odom_msg.pose.pose.position.x = odom_x_;
+  odom_msg.pose.pose.position.y = odom_y_;
+  odom_msg.pose.pose.position.z = 0.0;
+
+  // 姿态（从yaw角构造四元数）
+  tf2::Quaternion q;
+  q.setRPY(0, 0, odom_theta_);
+  odom_msg.pose.pose.orientation.x = q.x();
+  odom_msg.pose.pose.orientation.y = q.y();
+  odom_msg.pose.pose.orientation.z = q.z();
+  odom_msg.pose.pose.orientation.w = q.w();
+
+  // 速度（使用实际时间差计算）
+  odom_msg.twist.twist.linear.x = delta_distance / dt;
+  odom_msg.twist.twist.linear.y = 0.0;
+  odom_msg.twist.twist.angular.z = delta_theta / dt;
+
+  // 发布里程计消息
+  odom_pub_->publish(odom_msg);
+
+  // 发布TF变换（wheel_odom → wheel_base_link）
+  geometry_msgs::msg::TransformStamped odom_tf;
+  odom_tf.header.stamp = ros_time;
+  odom_tf.header.frame_id = "wheel_odom";
+  odom_tf.child_frame_id = "wheel_base_link";
+
+  odom_tf.transform.translation.x = odom_x_;
+  odom_tf.transform.translation.y = odom_y_;
+  odom_tf.transform.translation.z = 0.0;
+
+  odom_tf.transform.rotation.x = q.x();
+  odom_tf.transform.rotation.y = q.y();
+  odom_tf.transform.rotation.z = q.z();
+  odom_tf.transform.rotation.w = q.w();
+
+  tf_broadcaster_->sendTransform(odom_tf);
+
+  // 发布轨迹（根据距离和角度阈值）
+  double dx = odom_x_ - last_path_x_;
+  double dy = odom_y_ - last_path_y_;
+  double distance = std::sqrt(dx * dx + dy * dy);
+
+  // 归一化角度差到[-π, π]
+  double dtheta = odom_theta_ - last_path_theta_;
+  while (dtheta > M_PI) dtheta -= 2.0 * M_PI;
+  while (dtheta < -M_PI) dtheta += 2.0 * M_PI;
+  double angle_diff = std::abs(dtheta);
+
+  // 判断是否需要添加新的轨迹点
+  if (distance > PATH_DISTANCE_THRESHOLD || angle_diff > PATH_ANGLE_THRESHOLD) {
+    geometry_msgs::msg::PoseStamped pose_stamped;
+    pose_stamped.header.stamp = ros_time;
+    pose_stamped.header.frame_id = "wheel_odom";
+    pose_stamped.pose.position.x = odom_x_;
+    pose_stamped.pose.position.y = odom_y_;
+    pose_stamped.pose.position.z = 0.0;
+    pose_stamped.pose.orientation = odom_msg.pose.pose.orientation;
+
+    odom_path_.poses.push_back(pose_stamped);
+    odom_path_.header.stamp = ros_time;
+
+    // 发布轨迹
+    path_pub_->publish(odom_path_);
+
+    // 更新上次轨迹点
+    last_path_x_ = odom_x_;
+    last_path_y_ = odom_y_;
+    last_path_theta_ = odom_theta_;
+  }
+}
+
+void RobotChassisNode::publishIMU(const RawSensorData& sensor_data) {
+  // TODO: 实现IMU消息发布
+  // 传感器数据：欧拉角、陀螺仪、加速度
+  (void)sensor_data;  // 避免未使用参数警告
 }
