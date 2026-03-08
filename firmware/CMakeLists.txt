@@ -61,8 +61,6 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
         # ==================== 功能模块 ====================
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/Communication/comm_protocol.c
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/MotorControl/motor_control.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/USER/PowerManagement/power_management.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/USER/ServoControl/servo_control.c
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/IMU/imu.c
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/LedControl/led_control.c
 )
@@ -82,8 +80,6 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
         # ==================== 功能模块 ====================
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/Communication
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/MotorControl
-        ${CMAKE_CURRENT_SOURCE_DIR}/USER/PowerManagement
-        ${CMAKE_CURRENT_SOURCE_DIR}/USER/ServoControl
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/IMU
         ${CMAKE_CURRENT_SOURCE_DIR}/USER/LedControl
 )

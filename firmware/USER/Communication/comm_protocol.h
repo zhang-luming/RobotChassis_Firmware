@@ -28,12 +28,10 @@ extern "C" {
 #define PROTOCOL_TAIL     0xDF  /* 帧尾 */
 
 /* 功能码定义 */
-#define FUNC_BATTERY_VOLTAGE  0x01  /* 电池电压 */
 #define FUNC_ENCODER          0x02  /* 编码器位置（4×int16，直接上报计数器值） */
 #define FUNC_IMU              0x03  /* IMU合并数据（欧拉角+陀螺仪+加速度） */
 #define FUNC_MOTOR_SPEED      0x04  /* 电机目标速度 */
 #define FUNC_PID_PARAM        0x05  /* PID参数设置 */
-#define FUNC_SERVO_CONTROL    0x06  /* 舵机控制 */
 #define FUNC_PTP_SYNC         0x10  /* PTP时间同步 */
 
 #define RX_BUFFER_SIZE        256   /* 接收缓冲区大小 */
@@ -129,7 +127,6 @@ void Comm_SendBuf(USART_TypeDef *USART_COM, uint8_t *buf, uint16_t len);
  * @示例
  * - Comm_SendDataFrame(FUNC_IMU, imu_data, 9);          // 9个int16_t
  * - Comm_SendDataFrame(FUNC_ENCODER, encoders, 8);      // 8个int16_t
- * - Comm_SendDataFrame(FUNC_BATTERY_VOLTAGE, &voltage, 1);  // 1个int16_t
  */
 void Comm_SendDataFrame(uint8_t func_code, int16_t *data, uint8_t data_len);
 

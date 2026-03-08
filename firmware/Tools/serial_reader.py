@@ -348,7 +348,7 @@ class FrameStats:
 class SerialReader:
     """串口读取器"""
 
-    def __init__(self, port: str, baudrate: int = 115200, debug: bool = False):
+    def __init__(self, port: str, baudrate: int = 921600, debug: bool = False):
         self.port = port
         self.baudrate = baudrate
         self.serial: Optional[serial.Serial] = None
@@ -551,7 +551,7 @@ def main():
     )
 
     parser.add_argument('-p', '--port', type=str, help='串口设备 (例如: /dev/ttyUSB0 或 COM3)')
-    parser.add_argument('-b', '--baudrate', type=int, default=115200, help='波特率 (默认: 115200)')
+    parser.add_argument('-b', '--baudrate', type=int, default=921600, help='波特率 (默认: 921600)')
     parser.add_argument('-l', '--list', action='store_true', help='列出可用串口')
     parser.add_argument('-r', '--raw', action='store_true', help='显示原始数据')
     parser.add_argument('-d', '--debug', action='store_true', help='调试模式（显示接收的原始字节）')

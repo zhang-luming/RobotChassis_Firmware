@@ -13,7 +13,6 @@
 
 #include "System/debug.h"
 #include "motor_control.h"
-#include "servo_control.h"
 #include "stdio.h"
 #include "inttypes.h"
 #include "string.h"
@@ -214,11 +213,6 @@ static void ProcessFrame(uint8_t* frame, uint16_t frame_len) {
 
     case FUNC_PID_PARAM: /* 0x05 PID参数 */
       Motor_ProcessPIDFrame(frame, frame_len);
-      break;
-
-    case FUNC_SERVO_CONTROL: /* 0x06 舵机控制 */
-      printf("[Servo] 舵机控制 - 待实现\r\n");
-      // TODO: 实现舵机控制
       break;
 
     case FUNC_PTP_SYNC: /* 0x10 PTP时间同步 */

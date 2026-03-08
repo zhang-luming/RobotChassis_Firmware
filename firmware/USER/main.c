@@ -10,7 +10,7 @@
   * - MCU: STM32F103xE (72MHz, 256KB Flash, 48KB RAM)
   * - 电机: 4x 直流减速电机 + 编码器
   * - IMU: MPU6050 (I2C, DMP姿态融合)
-  * - 通信: UART2 (115200)
+  * - 通信: UART2 (921600)
   * - 调试: USART1
   *
   * 定时器分配：
@@ -43,8 +43,6 @@
 #include "motor_control.h"
 #include "comm_protocol.h"
 #include "imu.h"
-#include "power_management.h"
-#include "servo_control.h"
 
 /* Private define ------------------------------------------------------------*/
 /* 主循环计数器 - 每10ms递增 */
@@ -98,15 +96,7 @@ int main(void)
     Motor_Init();
     DEBUG_INFO("[OK] 电机控制模块\r\n");
 
-    /* 5. 电源管理模块 */
-    Power_Init();
-    DEBUG_INFO("[OK] 电源管理模块\r\n");
-
-    /* 6. 舵机控制模块 */
-    Servo_Init();
-    DEBUG_INFO("[OK] 舵机控制模块\r\n");
-
-    /* 7. 通信模块 (PTP时间同步在通信模块中断中处理) */
+    /* 5. 通信模块 (PTP时间同步在通信模块中断中处理) */
     Comm_Init();
     DEBUG_INFO("[OK] 通信模块\r\n");
 
@@ -143,16 +133,6 @@ int main(void)
             /* LED状态更新 */
             LED_Update();
 
-            /* 舵机控制更新 */
-            Servo_Update();
-
-            /* 5Hz 任务 (每200ms) ========== */
-            if (Run_Times % 20 == 0)
-            {
-                /* 电源电压更新并发送 */
-                Power_Update();
-                Power_Send();
-            }
         }
     }
 }
