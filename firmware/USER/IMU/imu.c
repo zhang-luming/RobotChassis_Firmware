@@ -74,7 +74,6 @@ static uint8_t s_data_valid = 0;            /* 数据有效标志 */
 /* 中断处理控制 */
 static uint8_t s_irq_enabled = 0;           /* 中断处理使能标志 */
 static uint32_t s_irq_count = 0;            /* 中断计数器 */
-static uint64_t s_last_irq_timestamp_us = 0; /* 上次中断时间戳 */
 
 /* ==================== 私有函数声明 ==================== */
 
@@ -112,7 +111,6 @@ uint8_t IMU_Init(void) {
     s_data_valid = 0;
     s_irq_enabled = 0;
     s_irq_count = 0;
-    s_last_irq_timestamp_us = 0;
 
     /* MPU6050 IMU初始化 */
     MPU_Init();
@@ -150,13 +148,6 @@ void IMU_IRQHandler(void) {
     if (!s_irq_enabled) {
         return;
     }
-
-    /* 获取时间戳和计数 */
-    uint64_t current_timestamp = Time_GetUs();
-    s_irq_count++;
-
-    /* 更新上次中断时间戳（用于调试） */
-    s_last_irq_timestamp_us = current_timestamp;
 
     /* 读取并上报传感器数据（编码器 + IMU） */
     IMU_UpdateAndPublish();
