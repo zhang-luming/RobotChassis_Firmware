@@ -37,8 +37,7 @@ def generate_launch_description():
         executable='robot_chassis_node',
         name='robot_chassis_node',
         output='screen',
-        parameters=[config_file],
-        arguments=[['serial_port:=', LaunchConfiguration('serial_port')]]
+        parameters=[config_file, {'serial_port': LaunchConfiguration('serial_port')}]
     )
 
     # IMU滤波节点 (Madgwick滤波器)
@@ -74,12 +73,12 @@ def generate_launch_description():
         package='tf2_ros',
         executable='static_transform_publisher',
         name='base_link_to_imu_link',
-        arguments=[
-            '0.0', '0.0', '0.1',           # x, y, z (米) - IMU安装高度
-            '0.0', '0.0', '0.0', '1.0',    # qx, qy, qz, qw (四元数) - 无旋转
-            'base_link',                   # 父坐标系
-            'imu_link'                     # 子坐标系
-        ]
+        parameters=[{
+            'x': 0.0, 'y': 0.0, 'z': 0.1,          # 平移 (米)
+            'qx': 0.0, 'qy': 0.0, 'qz': 0.0, 'qw': 1.0,  # 旋转 (四元数)
+            'frame_id': 'base_link',                # 父坐标系
+            'child_frame_id': 'imu_link'            # 子坐标系
+        }]
     )
 
     return LaunchDescription([
