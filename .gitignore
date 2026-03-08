@@ -5,6 +5,10 @@ ros2_ws/log/
 ros2_ws/src/*/build/
 ros2_ws/src/*/install/
 
+# 根目录的ROS2编译产物（误在根目录编译时产生）
+install/
+log/
+
 # ==================== 构建输出 ====================
 build/
 cmake/build/
