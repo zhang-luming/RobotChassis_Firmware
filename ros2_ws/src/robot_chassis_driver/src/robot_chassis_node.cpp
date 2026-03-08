@@ -4,6 +4,7 @@
 #include "robot_chassis_driver/robot_chassis_node.hpp"
 #include <cmath>
 #include <algorithm>
+#include <vector>
 
 using namespace std::chrono_literals;
 
@@ -27,11 +28,17 @@ RobotChassisNode::RobotChassisNode()
   this->declare_parameter("serial_port", "/dev/ttyUSB0");
   this->declare_parameter("serial_baudrate", 921600);
   this->declare_parameter("ptp_interval_ms", 200.0);
+  this->declare_parameter("encoder_ppr", 1000.0);
+  this->declare_parameter("wheel_radius", 0.1);
+  this->declare_parameter("wheelbase", 0.5);
 
   // 获取参数
   port_ = this->get_parameter("serial_port").as_string();
   baudrate_ = this->get_parameter("serial_baudrate").as_int();
   ptp_interval_ms_ = this->get_parameter("ptp_interval_ms").as_double();
+  encoder_ppr_ = this->get_parameter("encoder_ppr").as_double();
+  wheel_radius_ = this->get_parameter("wheel_radius").as_double();
+  wheelbase_ = this->get_parameter("wheelbase").as_double();
 
   // 初始化串口
   if (!initSerial()) {
@@ -39,12 +46,19 @@ RobotChassisNode::RobotChassisNode()
     return;
   }
 
+  // 创建cmd_vel订阅
+  cmd_vel_sub_ = this->create_subscription<geometry_msgs::msg::Twist>(
+      "cmd_vel", 10,
+      std::bind(&RobotChassisNode::cmdVelCallback, this, std::placeholders::_1));
+
   // 启动串口读取线程
   read_thread_ = std::thread(&RobotChassisNode::serialReadThread, this);
 
   RCLCPP_INFO(this->get_logger(), "RobotChassis节点已启动");
   RCLCPP_INFO(this->get_logger(), "串口: %s, 波特率: %d", port_.c_str(), baudrate_);
   RCLCPP_INFO(this->get_logger(), "PTP同步: 启用, 间隔: %.0f ms", ptp_interval_ms_);
+  RCLCPP_INFO(this->get_logger(), "机械参数: 编码器%.0f PPR, 轮径%.3fm, 轮距%.3fm",
+              encoder_ppr_, wheel_radius_, wheelbase_);
 }
 
 // ==================== 析构函数 ====================
@@ -235,7 +249,7 @@ void RobotChassisNode::sendPTPRequest() {
     // 发送完成后立即记录t1（最接近实际发送时刻）
     ptp_t1_ = this->now().nanoseconds() / 1000;  // 微秒
 
-    RCLCPP_INFO(this->get_logger(), "[PTP] 发送请求 (t1=%ld us)", ptp_t1_);
+    // RCLCPP_INFO(this->get_logger(), "[PTP] 发送请求 (t1=%ld us)", ptp_t1_);
   } catch (serial::SerialException& e) {
     RCLCPP_ERROR(this->get_logger(), "[PTP] 发送失败: %s", e.what());
   }
@@ -275,9 +289,9 @@ void RobotChassisNode::handlePTPFrame(const std::vector<uint8_t>& frame,
     ptp_initialized_ = true;
     ptp_integral_ = 0.0;
 
-    RCLCPP_INFO(this->get_logger(), "[PTP] 时域映射建立");
-    RCLCPP_INFO(this->get_logger(), "[PTP]   g_offset = %ld us", g_offset_);
-    RCLCPP_INFO(this->get_logger(), "[PTP]   MCU运行时间: %.3f 秒", t2_mcu / 1e6);
+    // RCLCPP_INFO(this->get_logger(), "[PTP] 时域映射建立");
+    // RCLCPP_INFO(this->get_logger(), "[PTP]   g_offset = %ld us", g_offset_);
+    // RCLCPP_INFO(this->get_logger(), "[PTP]   MCU运行时间: %.3f 秒", t2_mcu / 1e6);
 
     last_t1_ = t1;
     last_t2_ = static_cast<int64_t>(t2_mcu);
@@ -289,18 +303,18 @@ void RobotChassisNode::handlePTPFrame(const std::vector<uint8_t>& frame,
   int64_t t2_unix = static_cast<int64_t>(t2_mcu) + g_offset_;
   int64_t t3_unix = static_cast<int64_t>(t3_mcu) + g_offset_;
 
-  // ===== 计算PTP offset和delay =====
+  // ===== 计算PTP offset =====
   // offset: 时间偏移
   double offset = ((static_cast<double>(t2_unix) - t1) -
                    (static_cast<double>(t4) - t3_unix)) / 2.0;
-  // delay: 往返延迟
-  double delay = ((static_cast<double>(t4) - t1) +
-                  (static_cast<double>(t3_unix) - t2_unix)) / 2.0;
+  // delay: 往返延迟（未使用）
+  // double delay = ((static_cast<double>(t4) - t1) +
+  //                 (static_cast<double>(t3_unix) - t2_unix)) / 2.0;
 
   // 检测异常offset
   if (std::abs(offset) > 5000.0) {
-    RCLCPP_WARN(this->get_logger(), "[PTP] #%d 异常偏差值: %+.1f us，跳过本次",
-                ptp_sync_count_ + 1, offset);
+    // RCLCPP_WARN(this->get_logger(), "[PTP] #%d 异常偏差值: %+.1f us，跳过本次",
+    //             ptp_sync_count_ + 1, offset);
     last_t1_ = t1;
     last_t2_ = static_cast<int64_t>(t2_mcu);
     ptp_sync_count_++;
@@ -324,12 +338,12 @@ void RobotChassisNode::handlePTPFrame(const std::vector<uint8_t>& frame,
   // 检测收敛状态
   if (!ptp_converged_ && std::abs(offset) < 500.0) {
     ptp_converged_ = true;
-    RCLCPP_INFO(this->get_logger(), "[PTP] 已达到收敛状态");
+    // RCLCPP_INFO(this->get_logger(), "[PTP] 已达到收敛状态");
   }
 
-  // ===== 计算时间间隔 =====
-  int64_t dt_mcu = static_cast<int64_t>(t3_mcu - t2_mcu);  // MCU处理时间 (t3 - t2)
-  int64_t dt_linux = t4 - t1;                              // 整体往返时间 (t4 - t1)
+  // ===== 计算时间间隔（未使用）=====
+  // int64_t dt_mcu = static_cast<int64_t>(t3_mcu - t2_mcu);  // MCU处理时间 (t3 - t2)
+  // int64_t dt_linux = t4 - t1;                              // 整体往返时间 (t4 - t1)
 
   // 更新历史记录
   last_t1_ = t1;
@@ -337,10 +351,10 @@ void RobotChassisNode::handlePTPFrame(const std::vector<uint8_t>& frame,
   ptp_sync_count_++;
 
   // 打印PTP同步信息
-  RCLCPP_INFO(this->get_logger(),
-              "[PTP] #%d offset=%+.1f us | delay=%.1f us | correction=%.1f us | "
-              "g_offset=%ld us | Δt_MCU=%ld us | Δt_Linux=%ld us",
-              ptp_sync_count_, offset, delay, correction, g_offset_, dt_mcu, dt_linux);
+  // RCLCPP_INFO(this->get_logger(),
+  //             "[PTP] #%d offset=%+.1f us | delay=%.1f us | correction=%.1f us | "
+  //             "g_offset=%ld us | Δt_MCU=%ld us | Δt_Linux=%ld us",
+  //             ptp_sync_count_, offset, delay, correction, g_offset_, dt_mcu, dt_linux);
 }
 
 // ==================== 传感器数据处理 ====================
@@ -381,21 +395,97 @@ void RobotChassisNode::handleSensorFrame(const std::vector<uint8_t>& frame) {
 
   sensor_frame_count_++;
 
-  // 每50帧打印一次传感器数据（100Hz → 2Hz日志频率）
-  if (sensor_frame_count_ % 50 == 0) {
+  // 每100帧打印一次传感器数据（100Hz → 1Hz日志频率）
+  if (sensor_frame_count_ % 100 == 0) {
     RCLCPP_INFO(this->get_logger(), "[传感器 #%d]", sensor_frame_count_);
-    RCLCPP_INFO(this->get_logger(), "  时间戳: %ld us", sensor_data.timestamp_us);
     RCLCPP_INFO(this->get_logger(), "  编码器: [%d, %d, %d, %d]",
                 sensor_data.encoders[0], sensor_data.encoders[1],
                 sensor_data.encoders[2], sensor_data.encoders[3]);
     RCLCPP_INFO(this->get_logger(), "  欧拉角(°): [%.2f, %.2f, %.2f]",
                 sensor_data.euler[0] / 100.0, sensor_data.euler[1] / 100.0,
                 sensor_data.euler[2] / 100.0);
-    RCLCPP_INFO(this->get_logger(), "  陀螺仪(°/s): [%.2f, %.2f, %.2f]",
-                sensor_data.gyro[0] / 100.0, sensor_data.gyro[1] / 100.0,
-                sensor_data.gyro[2] / 100.0);
-    RCLCPP_INFO(this->get_logger(), "  加速度(g): [%.2f, %.2f, %.2f]",
-                sensor_data.accel[0] / 100.0, sensor_data.accel[1] / 100.0,
-                sensor_data.accel[2] / 100.0);
+  }
+}
+
+// ==================== 电机控制 ====================
+
+void RobotChassisNode::cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg) {
+  // 打印原始控制指令
+  RCLCPP_INFO(this->get_logger(), "[控制指令] linear.x=%.3f m/s, angular.z=%.3f rad/s",
+              msg->linear.x, msg->angular.z);
+
+  // 将Twist消息转换为4个电机速度
+  std::vector<int16_t> motor_speeds = twistToMotorSpeeds(msg->linear.x, msg->angular.z);
+
+  // 打印计算出的电机速度
+  RCLCPP_INFO(this->get_logger(), "[电机速度] A:%d, B:%d, C:%d, D:%d CPS",
+              motor_speeds[0], motor_speeds[1], motor_speeds[2], motor_speeds[3]);
+
+  // 发送速度控制指令
+  sendMotorSpeedCommand(motor_speeds);
+}
+
+std::vector<int16_t> RobotChassisNode::twistToMotorSpeeds(double linear_x, double angular_z) {
+  // 差速驱动运动学解算
+  // 四轮底盘：左侧轮A、C，右侧轮B、D
+
+  // 计算左右轮线速度
+  double v_left = linear_x - (angular_z * wheelbase_ / 2.0);
+  double v_right = linear_x + (angular_z * wheelbase_ / 2.0);
+
+  // 转换为编码器速度
+  // ticks_per_second = velocity_m_s * encoder_ppr / (2 * π * wheel_radius)
+  double conversion_factor = encoder_ppr_ / (2.0 * M_PI * wheel_radius_);
+
+  double left_cps = v_left * conversion_factor;
+  double right_cps = v_right * conversion_factor;
+
+  // 限制速度范围（int16_t: -32768 ~ 32767）
+  left_cps = std::max(std::min(left_cps, 30000.0), -30000.0);
+  right_cps = std::max(std::min(right_cps, 30000.0), -30000.0);
+
+  // 返回4个电机速度 [A, B, C, D]
+  // 只有A、B电机连接，C、D置零
+  std::vector<int16_t> speeds(4);
+  speeds[0] = static_cast<int16_t>(right_cps);  // 电机A（右）
+  speeds[1] = static_cast<int16_t>(left_cps);   // 电机B（左）
+  speeds[2] = 0;                                 // 电机C（未连接）
+  speeds[3] = 0;                                 // 电机D（未连接）
+
+  return speeds;
+}
+
+void RobotChassisNode::sendMotorSpeedCommand(const std::vector<int16_t>& speeds) {
+  if (speeds.size() != 4) {
+    RCLCPP_ERROR(this->get_logger(), "电机速度数组长度错误: %zu", speeds.size());
+    return;
+  }
+
+  // 构建电机速度控制帧
+  // 帧格式：[0xFC][0x31][速度A_L][速度A_H]...[速度D_L][速度D_H][checksum][0xDF]
+  std::vector<uint8_t> frame;
+  frame.reserve(MOTOR_FRAME_SIZE);
+
+  frame.push_back(PROTOCOL_HEADER);
+  frame.push_back(FUNC_MOTOR_SPEED);
+
+  // 4个int16_t速度值（小端序）
+  for (int i = 0; i < 4; i++) {
+    frame.push_back(static_cast<uint8_t>(speeds[i] & 0xFF));        // 低字节
+    frame.push_back(static_cast<uint8_t>((speeds[i] >> 8) & 0xFF)); // 高字节
+  }
+
+  // 计算校验和
+  uint8_t cs = checksum(frame.data(), frame.size());
+  frame.push_back(cs);
+  frame.push_back(PROTOCOL_TAIL);
+
+  // 发送（加锁保护）
+  try {
+    std::lock_guard<std::mutex> lock(serial_mutex_);
+    ser_.write(frame.data(), frame.size());
+    ser_.flush();
+  } catch (serial::SerialException& e) {
+    RCLCPP_ERROR(this->get_logger(), "发送电机指令失败: %s", e.what());
   }
 }

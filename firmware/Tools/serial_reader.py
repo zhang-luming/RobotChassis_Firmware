@@ -51,8 +51,8 @@ PROTOCOL_TAIL = 0xDF
 # 功能码定义
 class FuncCode:
     SENSOR_MERGED = 0x20    # 合并传感器数据（编码器4 + IMU9）(MCU→PC)
-    MOTOR_SPEED = 0x04      # 电机目标速度 (PC→MCU)
-    PID_PARAM = 0x05        # PID参数设置 (PC→MCU)
+    MOTOR_SPEED = 0x31      # 电机目标速度 (PC→MCU)
+    PID_PARAM = 0x32        # PID参数设置 (PC→MCU)
     PTP_SYNC = 0x10         # PTP时间同步 (双向)
 
 # 功能码名称映射

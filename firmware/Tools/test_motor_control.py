@@ -33,7 +33,7 @@ except ImportError:
 PROTOCOL_HEADER = 0xFC
 PROTOCOL_TAIL = 0xDF
 
-FUNC_MOTOR_SPEED = 0x04
+FUNC_MOTOR_SPEED = 0x31  # 电机目标速度
 FUNC_SENSOR_MERGED = 0x20  # 合并传感器数据（编码器4 + IMU9）
 
 BAUD_RATE = 921600
@@ -51,7 +51,7 @@ def build_motor_speed_frame(speeds: List[int]) -> bytes:
     """
     构建电机速度控制帧
 
-    帧格式：[FC][0x04][速度A低][速度A高][速度B低][速度B高]...[校验][DF]
+    帧格式：[FC][0x31][速度A低][速度A高][速度B低][速度B高]...[校验][DF]
     字节序：小端序
 
     Args:

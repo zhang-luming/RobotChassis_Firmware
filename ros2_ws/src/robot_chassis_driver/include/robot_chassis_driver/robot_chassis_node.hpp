@@ -6,11 +6,18 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <serial/serial.h>
+#include <geometry_msgs/msg/twist.hpp>
 #include <chrono>
 #include <vector>
 #include <mutex>
 #include <thread>
 #include <cstring>
+#include <cstdint>
+#include <cmath>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 // ==================== 协议常量 ====================
 
@@ -21,9 +28,13 @@
 #define FUNC_PTP_SYNC       0x10  // PTP时间同步
 #define FUNC_SENSOR_MERGED  0x20  // 传感器数据（编码器4 + 欧拉角3 + 陀螺仪3 + 加速度3）
 
+// PC → MCU 功能码
+#define FUNC_MOTOR_SPEED    0x31  // 电机目标速度（4个int16_t，CPS）
+
 // 帧长度定义
 #define SENSOR_FRAME_SIZE 38      // 传感器帧：1+1+26(13*int16)+8+1+1 = 38
 #define PTP_FRAME_SIZE     20      // PTP响应帧：1+1+8+8+1+1 = 20
+#define MOTOR_FRAME_SIZE   12      // 电机速度帧：1+1+8(4*int16)+1+1 = 12
 
 // ==================== 数据结构 ====================
 
@@ -53,6 +64,7 @@ struct RawSensorData {
  * 1. 通过串口与MCU通信
  * 2. PTP时间同步
  * 3. 解析传感器数据（编码器 + IMU）
+ * 4. 订阅cmd_vel并控制电机速度
  */
 class RobotChassisNode : public rclcpp::Node {
  public:
@@ -98,6 +110,19 @@ class RobotChassisNode : public rclcpp::Node {
   void handleSensorFrame(const std::vector<uint8_t>& frame);
   int16_t to_int16_le(uint8_t low, uint8_t high) const;
   int64_t to_int64_le(const uint8_t* data) const;
+
+  // ========== 电机控制相关 ==========
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
+  std::mutex serial_mutex_;  // 串口发送互斥锁
+
+  // 机械参数（从配置文件读取）
+  double encoder_ppr_;       // 编码器每圈脉冲数
+  double wheel_radius_;      // 轮半径（米）
+  double wheelbase_;         // 轮距（米）
+
+  void cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
+  void sendMotorSpeedCommand(const std::vector<int16_t>& speeds);
+  std::vector<int16_t> twistToMotorSpeeds(double linear_x, double angular_z);
 
   // ========== 参数相关 ==========
   double ptp_interval_ms_;   // PTP同步间隔（毫秒）

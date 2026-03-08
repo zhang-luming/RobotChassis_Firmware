@@ -31,8 +31,8 @@ extern "C" {
 #define FUNC_PTP_SYNC 0x10      /* PTP时间同步 */
 #define FUNC_SENSOR_MERGED 0x20 /* 传感器数据(IMU + 编码器) */
 
-#define FUNC_MOTOR_SPEED 0x04 /* 电机目标速度 */
-#define FUNC_PID_PARAM 0x05   /* PID参数设置 */
+#define FUNC_MOTOR_SPEED 0x31 /* 电机目标速度 */
+#define FUNC_PID_PARAM 0x32   /* PID参数设置 */
 
 #define RX_BUFFER_SIZE 256 /* 接收缓冲区大小 */
 
