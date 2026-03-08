@@ -22,7 +22,7 @@ def generate_launch_description():
     config_file = os.path.join(
         ament_index_python.packages.get_package_share_directory('robot_chassis_driver'),
         'config',
-        'robot_chassis.yaml'
+        'base.yaml'
     )
 
     ekf_config_file = os.path.join(
@@ -48,8 +48,8 @@ def generate_launch_description():
         output='screen',
         parameters=[config_file],
         remappings=[
-            ('/imu/data_raw', '/imu/data_raw'),  # 输入：订阅原始IMU数据
-            ('/imu/data', '/imu/data')           # 输出：发布滤波后的IMU数据
+            ('imu/data_raw', '/imu/data_raw'),  # 节点订阅 imu/data_raw -> 实际话题 /imu/data_raw
+            ('imu/data', '/imu/data')           # 节点发布 imu/data -> 实际话题 /imu/data
         ]
     )
 
@@ -63,7 +63,7 @@ def generate_launch_description():
         remappings=[
             ('/wheel_odom', '/wheel_odom'),  # 轮速里程计
             ('/imu/data', '/imu/data'),      # IMU数据
-            ('/odometry/filtered', '/odometry/filtered')  # 融合后里程计
+            ('/odometry/filtered', '/odom')  # 融合后里程计
         ]
     )
 
@@ -73,12 +73,12 @@ def generate_launch_description():
         package='tf2_ros',
         executable='static_transform_publisher',
         name='base_link_to_imu_link',
-        parameters=[{
-            'x': 0.0, 'y': 0.0, 'z': 0.1,          # 平移 (米)
-            'qx': 0.0, 'qy': 0.0, 'qz': 0.0, 'qw': 1.0,  # 旋转 (四元数)
-            'frame_id': 'base_link',                # 父坐标系
-            'child_frame_id': 'imu_link'            # 子坐标系
-        }]
+        arguments=[
+            '--x', '0.0', '--y', '0.0', '--z', '0.1',           # 平移 (米)
+            '--qx', '0.0', '--qy', '0.0', '--qz', '0.0', '--qw', '1.0',  # 旋转 (四元数)
+            '--frame-id', 'base_link',                          # 父坐标系
+            '--child-frame-id', 'imu_link'                      # 子坐标系
+        ]
     )
 
     return LaunchDescription([

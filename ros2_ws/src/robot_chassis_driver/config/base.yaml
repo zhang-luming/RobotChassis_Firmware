@@ -56,22 +56,22 @@
     # ==========================================================================
 
     # 是否使用磁力计
-    imu_filter_use_mag: false
+    use_mag: false
 
     # 是否发布TF变换
-    imu_filter_publish_tf: false
+    publish_tf: false
 
     # IMU坐标系
-    imu_filter_frame_id: "imu_link"
+    frame_id: "imu_link"
 
     # 滤波器增益（越大响应越快但噪声越大，推荐范围：0.0~1.0）
-    imu_filter_gain: 0.1
+    gain: 0.1
 
     # 姿态标准差
-    imu_filter_orientation_stddev: 0.0
+    orientation_stddev: 0.0
 
     # 世界坐标系（enu: 东-北-天, nwu: 北-西-天）
-    imu_filter_world_frame: "enu"
+    world_frame: "enu"
 
     # ==========================================================================
     # 机械参数（需要根据实际底盘测量调整）
