@@ -1,0 +1,2 @@
+# This directory contains STM32 firmware and should not be built by colcon
+# Build using: ./build.sh [debug|release]
