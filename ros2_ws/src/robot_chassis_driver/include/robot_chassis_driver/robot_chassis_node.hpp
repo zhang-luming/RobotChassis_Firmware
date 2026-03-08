@@ -9,6 +9,7 @@
 #include <geometry_msgs/msg/twist.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -198,6 +199,7 @@ class RobotChassisNode : public rclcpp::Node {
   std::thread publish_thread_;    // 消息发布线程
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
   // 里程计状态
@@ -209,8 +211,6 @@ class RobotChassisNode : public rclcpp::Node {
   // 轨迹发布
   nav_msgs::msg::Path odom_path_;  // 里程计轨迹
   double last_path_x_, last_path_y_, last_path_theta_;  // 上次轨迹点位置
-  static constexpr double PATH_DISTANCE_THRESHOLD = 0.05;  // 距离阈值（米）
-  static constexpr double PATH_ANGLE_THRESHOLD = 0.1;       // 角度阈值（弧度）
 
   void publishThread();          // 消息发布线程函数
   void publishOdometry(const RawSensorData& sensor_data);
@@ -220,10 +220,32 @@ class RobotChassisNode : public rclcpp::Node {
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
   std::mutex serial_mutex_;  // 串口发送互斥锁
 
+  // 话题名（从配置文件读取）
+  std::string cmd_vel_topic_;
+  std::string wheel_odom_topic_;
+  std::string wheel_odom_path_topic_;
+  std::string imu_topic_;
+
   // 机械参数（从配置文件读取）
   double encoder_ppr_;       // 编码器每圈脉冲数
   double wheel_radius_;      // 轮半径（米）
   double wheelbase_;         // 轮距（米）
+
+  // 坐标系参数（从配置文件读取）
+  std::string wheel_odom_frame_id_;
+  std::string wheel_base_frame_id_;
+  std::string imu_frame_id_;
+
+  // 轨迹参数（从配置文件读取）
+  double path_distance_threshold_;
+  double path_angle_threshold_;
+
+  // 协方差参数（从配置文件读取）
+  std::vector<double> imu_orientation_covariance_;
+  std::vector<double> imu_angular_velocity_covariance_;
+  std::vector<double> imu_linear_acceleration_covariance_;
+  std::vector<double> odom_pose_covariance_;
+  std::vector<double> odom_twist_covariance_;
 
   void cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
   void sendMotorSpeedCommand(const std::vector<int16_t>& speeds);

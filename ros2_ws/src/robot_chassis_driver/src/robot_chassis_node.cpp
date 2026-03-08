@@ -42,6 +42,34 @@ RobotChassisNode::RobotChassisNode()
   this->declare_parameter("encoder_ppr", 1000.0);
   this->declare_parameter("wheel_radius", 0.1);
   this->declare_parameter("wheelbase", 0.5);
+  this->declare_parameter("wheel_odom_frame_id", "wheel_odom");
+  this->declare_parameter("wheel_base_frame_id", "wheel_base_link");
+  this->declare_parameter("imu_frame_id", "imu_link");
+  this->declare_parameter("path_distance_threshold", 0.05);
+  this->declare_parameter("path_angle_threshold", 0.1);
+  this->declare_parameter("cmd_vel_topic", "/cmd_vel");
+  this->declare_parameter("wheel_odom_topic", "/wheel_odom");
+  this->declare_parameter("wheel_odom_path_topic", "/wheel_odom_path");
+  this->declare_parameter("imu_topic", "/imu");
+  this->declare_parameter("imu_orientation_covariance", std::vector<double>{0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01});
+  this->declare_parameter("imu_angular_velocity_covariance", std::vector<double>{0.001, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.001});
+  this->declare_parameter("imu_linear_acceleration_covariance", std::vector<double>{0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01});
+  this->declare_parameter("odom_pose_covariance", std::vector<double>{
+    0.01, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.01, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.01, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.01, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.01, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.1
+  });
+  this->declare_parameter("odom_twist_covariance", std::vector<double>{
+    0.01, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.01, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.01, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.001, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.001, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.01
+  });
 
   // 获取参数
   port_ = this->get_parameter("serial_port").as_string();
@@ -50,6 +78,20 @@ RobotChassisNode::RobotChassisNode()
   encoder_ppr_ = this->get_parameter("encoder_ppr").as_double();
   wheel_radius_ = this->get_parameter("wheel_radius").as_double();
   wheelbase_ = this->get_parameter("wheelbase").as_double();
+  wheel_odom_frame_id_ = this->get_parameter("wheel_odom_frame_id").as_string();
+  wheel_base_frame_id_ = this->get_parameter("wheel_base_frame_id").as_string();
+  imu_frame_id_ = this->get_parameter("imu_frame_id").as_string();
+  path_distance_threshold_ = this->get_parameter("path_distance_threshold").as_double();
+  path_angle_threshold_ = this->get_parameter("path_angle_threshold").as_double();
+  cmd_vel_topic_ = this->get_parameter("cmd_vel_topic").as_string();
+  wheel_odom_topic_ = this->get_parameter("wheel_odom_topic").as_string();
+  wheel_odom_path_topic_ = this->get_parameter("wheel_odom_path_topic").as_string();
+  imu_topic_ = this->get_parameter("imu_topic").as_string();
+  imu_orientation_covariance_ = this->get_parameter("imu_orientation_covariance").as_double_array();
+  imu_angular_velocity_covariance_ = this->get_parameter("imu_angular_velocity_covariance").as_double_array();
+  imu_linear_acceleration_covariance_ = this->get_parameter("imu_linear_acceleration_covariance").as_double_array();
+  odom_pose_covariance_ = this->get_parameter("odom_pose_covariance").as_double_array();
+  odom_twist_covariance_ = this->get_parameter("odom_twist_covariance").as_double_array();
 
   // 初始化串口
   if (!initSerial()) {
@@ -59,12 +101,13 @@ RobotChassisNode::RobotChassisNode()
 
   // 创建cmd_vel订阅
   cmd_vel_sub_ = this->create_subscription<geometry_msgs::msg::Twist>(
-      "cmd_vel", 10,
+      cmd_vel_topic_, 10,
       std::bind(&RobotChassisNode::cmdVelCallback, this, std::placeholders::_1));
 
   // 创建里程计发布者
-  odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>("wheel_odom", 10);
-  path_pub_ = this->create_publisher<nav_msgs::msg::Path>("wheel_odom_path", 10);
+  odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>(wheel_odom_topic_, 10);
+  path_pub_ = this->create_publisher<nav_msgs::msg::Path>(wheel_odom_path_topic_, 10);
+  imu_pub_ = this->create_publisher<sensor_msgs::msg::Imu>(imu_topic_, 10);
   tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
 
   // 初始化编码器历史
@@ -73,7 +116,7 @@ RobotChassisNode::RobotChassisNode()
   }
 
   // 初始化轨迹消息
-  odom_path_.header.frame_id = "wheel_odom";
+  odom_path_.header.frame_id = wheel_odom_frame_id_;
 
   // 启动串口读取线程
   read_thread_ = std::thread(&RobotChassisNode::serialReadThread, this);
@@ -86,6 +129,9 @@ RobotChassisNode::RobotChassisNode()
   RCLCPP_INFO(this->get_logger(), "PTP同步: 启用, 间隔: %.0f ms", ptp_interval_ms_);
   RCLCPP_INFO(this->get_logger(), "机械参数: 编码器%.0f PPR, 轮径%.3fm, 轮距%.3fm",
               encoder_ppr_, wheel_radius_, wheelbase_);
+  RCLCPP_INFO(this->get_logger(), "话题: %s, %s, %s, %s",
+              cmd_vel_topic_.c_str(), wheel_odom_topic_.c_str(),
+              wheel_odom_path_topic_.c_str(), imu_topic_.c_str());
 }
 
 // ==================== 析构函数 ====================
@@ -525,8 +571,8 @@ void RobotChassisNode::publishThread() {
       // 发布里程计数据
       publishOdometry(sensor_data);
 
-      // 将来可以在这里添加IMU消息发布
-      // publishIMU(sensor_data);
+      // 发布IMU数据
+      publishIMU(sensor_data);
     } else {
       // 队列为空，休眠1ms
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -601,8 +647,8 @@ void RobotChassisNode::publishOdometry(const RawSensorData& sensor_data) {
   // 构造里程计消息
   nav_msgs::msg::Odometry odom_msg;
   odom_msg.header.stamp = ros_time;
-  odom_msg.header.frame_id = "wheel_odom";
-  odom_msg.child_frame_id = "wheel_base_link";
+  odom_msg.header.frame_id = wheel_odom_frame_id_;
+  odom_msg.child_frame_id = wheel_base_frame_id_;
 
   // 位置
   odom_msg.pose.pose.position.x = odom_x_;
@@ -622,14 +668,20 @@ void RobotChassisNode::publishOdometry(const RawSensorData& sensor_data) {
   odom_msg.twist.twist.linear.y = 0.0;
   odom_msg.twist.twist.angular.z = delta_theta / dt;
 
+  // 设置协方差
+  for (int i = 0; i < 36; i++) {
+    odom_msg.pose.covariance[i] = odom_pose_covariance_[i];
+    odom_msg.twist.covariance[i] = odom_twist_covariance_[i];
+  }
+
   // 发布里程计消息
   odom_pub_->publish(odom_msg);
 
   // 发布TF变换（wheel_odom → wheel_base_link）
   geometry_msgs::msg::TransformStamped odom_tf;
   odom_tf.header.stamp = ros_time;
-  odom_tf.header.frame_id = "wheel_odom";
-  odom_tf.child_frame_id = "wheel_base_link";
+  odom_tf.header.frame_id = wheel_odom_frame_id_;
+  odom_tf.child_frame_id = wheel_base_frame_id_;
 
   odom_tf.transform.translation.x = odom_x_;
   odom_tf.transform.translation.y = odom_y_;
@@ -654,10 +706,10 @@ void RobotChassisNode::publishOdometry(const RawSensorData& sensor_data) {
   double angle_diff = std::abs(dtheta);
 
   // 判断是否需要添加新的轨迹点
-  if (distance > PATH_DISTANCE_THRESHOLD || angle_diff > PATH_ANGLE_THRESHOLD) {
+  if (distance > path_distance_threshold_ || angle_diff > path_angle_threshold_) {
     geometry_msgs::msg::PoseStamped pose_stamped;
     pose_stamped.header.stamp = ros_time;
-    pose_stamped.header.frame_id = "wheel_odom";
+    pose_stamped.header.frame_id = wheel_odom_frame_id_;
     pose_stamped.pose.position.x = odom_x_;
     pose_stamped.pose.position.y = odom_y_;
     pose_stamped.pose.position.z = 0.0;
@@ -677,7 +729,47 @@ void RobotChassisNode::publishOdometry(const RawSensorData& sensor_data) {
 }
 
 void RobotChassisNode::publishIMU(const RawSensorData& sensor_data) {
-  // TODO: 实现IMU消息发布
-  // 传感器数据：欧拉角、陀螺仪、加速度
-  (void)sensor_data;  // 避免未使用参数警告
+  // 将MCU时间戳转换为ROS时间
+  rclcpp::Time ros_time = rclcpp::Time(
+      (sensor_data.timestamp_us + g_offset_) * 1000);  // 微秒转纳秒
+
+  // 构造IMU消息
+  sensor_msgs::msg::Imu imu_msg;
+  imu_msg.header.stamp = ros_time;
+  imu_msg.header.frame_id = imu_frame_id_;
+
+  // 欧拉角转四元数（roll, pitch, yaw）
+  // 注意：MCU上报的是[pitch, roll, yaw]，单位0.01度
+  double roll = sensor_data.euler[1] / 100.0 * M_PI / 180.0;   // 弧度
+  double pitch = sensor_data.euler[0] / 100.0 * M_PI / 180.0;  // 弧度
+  double yaw = sensor_data.euler[2] / 100.0 * M_PI / 180.0;    // 弧度
+
+  tf2::Quaternion q;
+  q.setRPY(roll, pitch, yaw);
+  imu_msg.orientation.x = q.x();
+  imu_msg.orientation.y = q.y();
+  imu_msg.orientation.z = q.z();
+  imu_msg.orientation.w = q.w();
+
+  // 陀螺仪数据（单位：0.01弧度/s → 弧度/s）
+  imu_msg.angular_velocity.x = sensor_data.gyro[0] / 100.0;
+  imu_msg.angular_velocity.y = sensor_data.gyro[1] / 100.0;
+  imu_msg.angular_velocity.z = sensor_data.gyro[2] / 100.0;
+
+  // 加速度数据（单位：0.01g → m/s²）
+  // g = 9.80665 m/s²
+  constexpr double G_TO_ACCEL = 9.80665;
+  imu_msg.linear_acceleration.x = sensor_data.accel[0] / 100.0 * G_TO_ACCEL;
+  imu_msg.linear_acceleration.y = sensor_data.accel[1] / 100.0 * G_TO_ACCEL;
+  imu_msg.linear_acceleration.z = sensor_data.accel[2] / 100.0 * G_TO_ACCEL;
+
+  // 设置协方差（从配置文件读取）
+  for (int i = 0; i < 9; i++) {
+    imu_msg.orientation_covariance[i] = imu_orientation_covariance_[i];
+    imu_msg.angular_velocity_covariance[i] = imu_angular_velocity_covariance_[i];
+    imu_msg.linear_acceleration_covariance[i] = imu_linear_acceleration_covariance_[i];
+  }
+
+  // 发布IMU消息
+  imu_pub_->publish(imu_msg);
 }
