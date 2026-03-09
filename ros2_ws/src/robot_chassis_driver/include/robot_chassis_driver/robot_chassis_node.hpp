@@ -254,6 +254,25 @@ class RobotChassisNode : public rclcpp::Node {
   // ========== 参数相关 ==========
   double ptp_interval_ms_;   // PTP同步间隔（毫秒）
   int ptp_seq_;              // PTP序列号
+
+  // ========== IMU零偏校准相关 ==========
+  struct ChannelStats {
+    double mean = 0.0;       // 均值（零偏）
+    double m2 = 0.0;         // 平方差累计（用于计算方差）
+    int count = 0;           // 样本计数
+    double deadzone = 0.0;   // 死区（标准差 × 倍数）
+    bool calibrated = false; // 是否已校准
+  };
+
+  ChannelStats gyro_stats_[3];      // 陀螺仪三轴统计 [x, y, z]
+  ChannelStats accel_stats_[3];     // 加速度三轴统计 [x, y, z]
+
+  int calibration_frames_;          // 校准需要的帧数
+  double deadzone_sigma_;           // 死区标准差倍数
+  bool imu_calibrated_;             // IMU是否已完成校准
+
+  void updateIMUCalibration(const RawSensorData& sensor_data);
+  double applyCalibration(double value, ChannelStats& stats);
 };
 
 #endif  // ROBOT_CHASSIS_DRIVER__ROBOT_CHASSIS_NODE_HPP_

@@ -54,6 +54,10 @@ RobotChassisNode::RobotChassisNode()
   this->declare_parameter("imu_orientation_covariance", std::vector<double>{0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01});
   this->declare_parameter("imu_angular_velocity_covariance", std::vector<double>{0.001, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.001});
   this->declare_parameter("imu_linear_acceleration_covariance", std::vector<double>{0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01});
+
+  // IMU校准参数
+  this->declare_parameter("imu_calibration_frames", 100);
+  this->declare_parameter("imu_deadzone_sigma", 3.0);
   this->declare_parameter("odom_pose_covariance", std::vector<double>{
     0.01, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.01, 0.0, 0.0, 0.0, 0.0,
@@ -92,6 +96,11 @@ RobotChassisNode::RobotChassisNode()
   imu_linear_acceleration_covariance_ = this->get_parameter("imu_linear_acceleration_covariance").as_double_array();
   odom_pose_covariance_ = this->get_parameter("odom_pose_covariance").as_double_array();
   odom_twist_covariance_ = this->get_parameter("odom_twist_covariance").as_double_array();
+
+  // 获取IMU校准参数
+  calibration_frames_ = this->get_parameter("imu_calibration_frames").as_int();
+  deadzone_sigma_ = this->get_parameter("imu_deadzone_sigma").as_double();
+  imu_calibrated_ = false;
 
   // 初始化串口
   if (!initSerial()) {
@@ -465,7 +474,7 @@ void RobotChassisNode::handleSensorFrame(const std::vector<uint8_t>& frame) {
   }
 
   // 解析加速度（3个int16，小端序，索引22-27），单位：0.01g
-  for (int i = 0; i < 6; i++) {
+  for (int i = 0; i < 3; i++) {
     sensor_data.accel[i] = to_int16_le(frame[22 + i*2], frame[22 + i*2 + 1]);
   }
 
@@ -728,7 +737,117 @@ void RobotChassisNode::publishOdometry(const RawSensorData& sensor_data) {
   }
 }
 
+// ==================== IMU零偏校准 ====================
+
+/**
+ * @brief 使用Welford在线算法更新IMU校准统计
+ *
+ * Welford算法优点：
+ * - 数值稳定性好（避免相减抵消）
+ * - 只需遍历数据一次
+ * - 只需存储mean和M2，内存占用小
+ */
+void RobotChassisNode::updateIMUCalibration(const RawSensorData& sensor_data) {
+  // 更新陀螺仪三轴统计
+  for (int i = 0; i < 3; i++) {
+    double value = sensor_data.gyro[i] / 100.0;  // 转换为弧度/s
+    ChannelStats& stats = gyro_stats_[i];
+
+    if (stats.count < calibration_frames_) {
+      // Welford在线算法
+      stats.count++;
+      double delta = value - stats.mean;
+      stats.mean += delta / stats.count;
+      double delta2 = value - stats.mean;
+      stats.m2 += delta * delta2;
+
+      // 完成校准后计算死区
+      if (stats.count == calibration_frames_) {
+        double variance = stats.m2 / stats.count;
+        double stddev = std::sqrt(variance);
+        stats.deadzone = deadzone_sigma_ * stddev;
+        stats.calibrated = true;
+
+        RCLCPP_INFO(this->get_logger(),
+                    "[IMU校准] 陀螺仪 %c 轴: 零偏=%.6f rad/s, 标准差=%.6f rad/s, 死区=%.6f rad/s",
+                    'X' + i, stats.mean, stddev, stats.deadzone);
+      }
+    }
+  }
+
+  // 更新加速度三轴统计
+  for (int i = 0; i < 3; i++) {
+    double value = sensor_data.accel[i] / 100.0 * 9.80665;  // 转换为m/s²
+    ChannelStats& stats = accel_stats_[i];
+
+    if (stats.count < calibration_frames_) {
+      stats.count++;
+      double delta = value - stats.mean;
+      stats.mean += delta / stats.count;
+      double delta2 = value - stats.mean;
+      stats.m2 += delta * delta2;
+
+      if (stats.count == calibration_frames_) {
+        double variance = stats.m2 / stats.count;
+        double stddev = std::sqrt(variance);
+        stats.deadzone = deadzone_sigma_ * stddev;
+        stats.calibrated = true;
+
+        RCLCPP_INFO(this->get_logger(),
+                    "[IMU校准] 加速度 %c 轴: 零偏=%.6f m/s², 标准差=%.6f m/s², 死区=%.6f m/s²",
+                    'X' + i, stats.mean, stddev, stats.deadzone);
+      }
+    }
+  }
+
+  // 检查是否全部完成校准
+  if (!imu_calibrated_) {
+    bool all_calibrated = true;
+    for (int i = 0; i < 3; i++) {
+      if (!gyro_stats_[i].calibrated || !accel_stats_[i].calibrated) {
+        all_calibrated = false;
+        break;
+      }
+    }
+
+    if (all_calibrated) {
+      imu_calibrated_ = true;
+      RCLCPP_INFO(this->get_logger(), "[IMU校准] 全部6轴校准完成，开始应用零偏补偿");
+    }
+  }
+}
+
+/**
+ * @brief 应用零偏补偿和死区滤波
+ *
+ * @param value 原始值
+ * @param stats 通道统计信息
+ * @return 补偿后的值
+ */
+double RobotChassisNode::applyCalibration(double value, ChannelStats& stats) {
+  if (!stats.calibrated) {
+    return value;  // 未校准，直接返回原始值
+  }
+
+  // 减去零偏
+  double corrected = value - stats.mean;
+
+  // 应用死区滤波（小于死区的波动视为噪声）
+  if (std::abs(corrected) < stats.deadzone) {
+    return 0.0;
+  }
+
+  return corrected;
+}
+
 void RobotChassisNode::publishIMU(const RawSensorData& sensor_data) {
+  // 更新校准统计（如果未完成）
+  if (!imu_calibrated_) {
+    updateIMUCalibration(sensor_data);
+    // 校准期间不发布IMU消息，避免滤波器收到未校准的数据
+    return;
+  }
+
   // 将MCU时间戳转换为ROS时间
   rclcpp::Time ros_time = rclcpp::Time(
       (sensor_data.timestamp_us + g_offset_) * 1000);  // 微秒转纳秒
@@ -740,32 +859,69 @@ void RobotChassisNode::publishIMU(const RawSensorData& sensor_data) {
 
   // 欧拉角转四元数（roll, pitch, yaw）
   // 注意：MCU上报的是[pitch, roll, yaw]，单位0.01度
-  double roll = sensor_data.euler[1] / 100.0 * M_PI / 180.0;   // 弧度
-  double pitch = sensor_data.euler[0] / 100.0 * M_PI / 180.0;  // 弧度
-  double yaw = sensor_data.euler[2] / 100.0 * M_PI / 180.0;    // 弧度
+  // 暂时不发布MCU DMP的四元数，让滤波器自行计算
+  // double roll = sensor_data.euler[1] / 100.0 * M_PI / 180.0;   // 弧度
+  // double pitch = sensor_data.euler[0] / 100.0 * M_PI / 180.0;  // 弧度
+  // double yaw = sensor_data.euler[2] / 100.0 * M_PI / 180.0;    // 弧度
 
-  tf2::Quaternion q;
-  q.setRPY(roll, pitch, yaw);
-  imu_msg.orientation.x = q.x();
-  imu_msg.orientation.y = q.y();
-  imu_msg.orientation.z = q.z();
-  imu_msg.orientation.w = q.w();
+  // tf2::Quaternion q;
+  // q.setRPY(roll, pitch, yaw);
+  // imu_msg.orientation.x = q.x();
+  // imu_msg.orientation.y = q.y();
+  // imu_msg.orientation.z = q.z();
+  // imu_msg.orientation.w = q.w();
+
+  // 设置orientation为0（表示数据不可用）
+  imu_msg.orientation.x = 0.0;
+  imu_msg.orientation.y = 0.0;
+  imu_msg.orientation.z = 0.0;
+  imu_msg.orientation.w = 0.0;
 
   // 陀螺仪数据（单位：0.01弧度/s → 弧度/s）
-  imu_msg.angular_velocity.x = sensor_data.gyro[0] / 100.0;
-  imu_msg.angular_velocity.y = sensor_data.gyro[1] / 100.0;
-  imu_msg.angular_velocity.z = sensor_data.gyro[2] / 100.0;
+  // 应用零偏补偿和死区滤波
+  double gyro_x_raw = sensor_data.gyro[0] / 100.0;
+  double gyro_y_raw = sensor_data.gyro[1] / 100.0;
+  double gyro_z_raw = sensor_data.gyro[2] / 100.0;
+
+  double gyro_x_calibrated = applyCalibration(gyro_x_raw, gyro_stats_[0]);
+  double gyro_y_calibrated = applyCalibration(gyro_y_raw, gyro_stats_[1]);
+  double gyro_z_calibrated = applyCalibration(gyro_z_raw, gyro_stats_[2]);
+
+  // 坐标系变换：将IMU坐标系对齐到底盘坐标系
+  // 变换规则：新X = 旧Y，新Y = -旧X，新Z = 旧Z（绕Z轴旋转90度）
+  imu_msg.angular_velocity.x = gyro_y_calibrated;   // 新X = 旧Y
+  imu_msg.angular_velocity.y = -gyro_x_calibrated;  // 新Y = -旧X
+  imu_msg.angular_velocity.z = gyro_z_calibrated;   // Z轴不变
 
   // 加速度数据（单位：0.01g → m/s²）
   // g = 9.80665 m/s²
   constexpr double G_TO_ACCEL = 9.80665;
-  imu_msg.linear_acceleration.x = sensor_data.accel[0] / 100.0 * G_TO_ACCEL;
-  imu_msg.linear_acceleration.y = sensor_data.accel[1] / 100.0 * G_TO_ACCEL;
-  imu_msg.linear_acceleration.z = sensor_data.accel[2] / 100.0 * G_TO_ACCEL;
 
-  // 设置协方差（从配置文件读取）
+  double accel_x_raw = sensor_data.accel[0] / 100.0 * G_TO_ACCEL;
+  double accel_y_raw = sensor_data.accel[1] / 100.0 * G_TO_ACCEL;
+  double accel_z_raw = sensor_data.accel[2] / 100.0 * G_TO_ACCEL;
+
+  // 应用零偏补偿和死区滤波
+  double accel_x_calibrated = applyCalibration(accel_x_raw, accel_stats_[0]);
+  double accel_y_calibrated = applyCalibration(accel_y_raw, accel_stats_[1]);
+  double accel_z_calibrated = applyCalibration(accel_z_raw, accel_stats_[2]);
+
+  // 坐标系变换：将IMU坐标系对齐到底盘坐标系
+  // 变换规则：新X = 旧Y，新Y = -旧X，新Z = 旧Z（绕Z轴旋转90度）
+  imu_msg.linear_acceleration.x = accel_y_calibrated;   // 新X = 旧Y
+  imu_msg.linear_acceleration.y = -accel_x_calibrated;  // 新Y = -旧X
+
+  // Z轴加速度：减去零偏后，再加上重力加速度9.8（Z轴不变）
+  imu_msg.linear_acceleration.z = accel_z_calibrated + 9.80665;
+
+  // 设置协方差
+  // orientation_covariance设为全0，表示orientation数据不可用
+  // 这样滤波器会忽略orientation字段，只使用陀螺仪和加速度自行计算姿态
   for (int i = 0; i < 9; i++) {
-    imu_msg.orientation_covariance[i] = imu_orientation_covariance_[i];
+    imu_msg.orientation_covariance[i] = 0.0;
+  }
+  // 陀螺仪和加速度协方差从配置文件读取
+  for (int i = 0; i < 9; i++) {
     imu_msg.angular_velocity_covariance[i] = imu_angular_velocity_covariance_[i];
     imu_msg.linear_acceleration_covariance[i] = imu_linear_acceleration_covariance_[i];
   }
