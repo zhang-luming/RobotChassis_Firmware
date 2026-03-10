@@ -1,6 +1,3 @@
-// Copyright 2026 RobotChassis Driver
-// License: MIT
-
 #ifndef ROBOT_CHASSIS_DRIVER__ROBOT_CHASSIS_NODE_HPP_
 #define ROBOT_CHASSIS_DRIVER__ROBOT_CHASSIS_NODE_HPP_
 
@@ -49,11 +46,6 @@
 
 /**
  * @brief 无锁环形队列（单生产者单消费者）
- *
- * 特点：
- * - 无锁设计，使用原子读写指针
- * - 固定大小，覆盖式写入
- * - 适用于高频传感器数据缓存
  */
 template<typename T, size_t Size>
 class LockFreeRingBuffer {
@@ -146,8 +138,8 @@ struct RawSensorData {
  * 1. 通过串口与MCU通信
  * 2. PTP时间同步
  * 3. 解析传感器数据并推入队列（生产者）
- * 4. 订阅cmd_vel并控制电机速度
- * 5. 从队列消费数据并发布ROS消息（消费者）：odom、imu等
+ * 4. 从队列消费数据并发布ROS消息（消费者）：odom、imu等
+ * 5. 订阅cmd_vel并控制电机速度
  */
 class RobotChassisNode : public rclcpp::Node {
  public:
@@ -212,9 +204,16 @@ class RobotChassisNode : public rclcpp::Node {
   nav_msgs::msg::Path odom_path_;  // 里程计轨迹
   double last_path_x_, last_path_y_, last_path_theta_;  // 上次轨迹点位置
 
+  // ========== EKF里程计轨迹发布 ==========
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr ekf_odom_sub_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr ekf_trajectory_pub_;
+  nav_msgs::msg::Path ekf_trajectory_;  // EKF融合后的轨迹
+  double last_ekf_x_, last_ekf_y_, last_ekf_theta_;  // 上次EKF轨迹点位置
+
   void publishThread();          // 消息发布线程函数
   void publishOdometry(const RawSensorData& sensor_data);
   void publishIMU(const RawSensorData& sensor_data);  // 预留接口
+  void ekfOdomCallback(const nav_msgs::msg::Odometry::SharedPtr msg);  // EKF里程计回调
 
   // ========== 电机控制相关 ==========
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
@@ -239,6 +238,13 @@ class RobotChassisNode : public rclcpp::Node {
   // 轨迹参数（从配置文件读取）
   double path_distance_threshold_;
   double path_angle_threshold_;
+
+  // EKF轨迹参数（从配置文件读取）
+  bool publish_ekf_trajectory_;           // 是否发布EKF轨迹
+  std::string ekf_odom_topic_;            // EKF里程计话题
+  std::string ekf_trajectory_topic_;      // EKF轨迹话题
+  double ekf_trajectory_distance_threshold_;   // EKF轨迹距离阈值
+  double ekf_trajectory_angle_threshold_;      // EKF轨迹角度阈值
 
   // 协方差参数（从配置文件读取）
   std::vector<double> imu_orientation_covariance_;
@@ -273,6 +279,23 @@ class RobotChassisNode : public rclcpp::Node {
 
   void updateIMUCalibration(const RawSensorData& sensor_data);
   double applyCalibration(double value, ChannelStats& stats);
+
+  // ========== 轮速约束IMU零偏相关 ==========
+  struct VelocitySample {
+    double linear_x;        // 线速度 m/s
+    double angular_z;       // 角速度 rad/s
+    int64_t timestamp_us;   // 时间戳（微秒）
+  };
+
+  std::vector<VelocitySample> velocity_history_;  // 轮速历史记录
+  double velocity_threshold_;         // 轮速阈值（m/s）
+  double static_time_window_;         // 静止判断时间窗口（秒）
+  int64_t static_start_time_us_;      // 开始静止的时刻（微秒）
+  bool is_static_;                    // 当前是否静止
+  bool was_static_;                   // 上一次是否静止（用于检测状态变化）
+
+  void updateVelocityHistory(double linear_x, double angular_z, int64_t timestamp_us);
+  bool checkStaticState(int64_t current_timestamp_us);
 };
 
 #endif  // ROBOT_CHASSIS_DRIVER__ROBOT_CHASSIS_NODE_HPP_

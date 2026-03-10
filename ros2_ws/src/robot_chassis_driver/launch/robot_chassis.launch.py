@@ -67,6 +67,21 @@ def generate_launch_description():
         ]
     )
 
+    # 静态TF发布器 (odom -> wheel_odom)
+    # 连接EKF融合里程计坐标系到轮速里程计坐标系
+    # 通常为identity变换，用于在同一TF树中对比两种里程计
+    static_tf_odom_to_wheel_odom = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='odom_to_wheel_odom',
+        arguments=[
+            '--x', '0.0', '--y', '0.0', '--z', '0.0',           # 平移 (米)
+            '--qx', '0.0', '--qy', '0.0', '--qz', '0.0', '--qw', '1.0',  # 旋转 (四元数)
+            '--frame-id', 'odom',                               # 父坐标系 (EKF融合里程计)
+            '--child-frame-id', 'wheel_odom'                    # 子坐标系 (轮速里程计)
+        ]
+    )
+
     # 静态TF发布器 (base_link -> imu_link)
     # 注意：需要根据实际IMU安装位置调整平移和旋转参数
     static_tf_base_to_imu = Node(
@@ -86,5 +101,6 @@ def generate_launch_description():
         robot_chassis_node,
         imu_filter_node,
         ekf_filter_node,
+        static_tf_odom_to_wheel_odom,
         static_tf_base_to_imu,
     ])

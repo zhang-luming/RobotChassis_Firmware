@@ -1,6 +1,3 @@
-// Copyright 2026 RobotChassis Driver
-// License: MIT
-
 #include "robot_chassis_driver/robot_chassis_node.hpp"
 #include <rclcpp/rclcpp.hpp>
 

@@ -1,8 +1,6 @@
-// Copyright 2026 RobotChassis Driver
-// License: MIT
-
 #include "robot_chassis_driver/robot_chassis_node.hpp"
 #include <tf2/LinearMath/Quaternion.h>
+#include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <cmath>
 #include <algorithm>
@@ -33,6 +31,9 @@ RobotChassisNode::RobotChassisNode()
       last_path_x_(0.0),
       last_path_y_(0.0),
       last_path_theta_(0.0),
+      last_ekf_x_(0.0),
+      last_ekf_y_(0.0),
+      last_ekf_theta_(0.0),
       ptp_seq_(0) {
 
   // 声明参数
@@ -58,6 +59,18 @@ RobotChassisNode::RobotChassisNode()
   // IMU校准参数
   this->declare_parameter("imu_calibration_frames", 100);
   this->declare_parameter("imu_deadzone_sigma", 3.0);
+
+  // 轮速约束IMU零偏参数
+  this->declare_parameter("imu_velocity_threshold", 0.01);
+  this->declare_parameter("imu_static_time_window", 1.0);
+
+  // EKF轨迹发布参数
+  this->declare_parameter("publish_ekf_trajectory", false);
+  this->declare_parameter("ekf_odom_topic", "/odom");
+  this->declare_parameter("ekf_trajectory_topic", "/ekf_trajectory");
+  this->declare_parameter("ekf_trajectory_distance_threshold", 0.05);
+  this->declare_parameter("ekf_trajectory_angle_threshold", 0.1);
+
   this->declare_parameter("odom_pose_covariance", std::vector<double>{
     0.01, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.01, 0.0, 0.0, 0.0, 0.0,
@@ -102,6 +115,20 @@ RobotChassisNode::RobotChassisNode()
   deadzone_sigma_ = this->get_parameter("imu_deadzone_sigma").as_double();
   imu_calibrated_ = false;
 
+  // 获取轮速约束IMU零偏参数
+  velocity_threshold_ = this->get_parameter("imu_velocity_threshold").as_double();
+  static_time_window_ = this->get_parameter("imu_static_time_window").as_double();
+  static_start_time_us_ = 0;
+  is_static_ = false;
+  was_static_ = false;
+
+  // 获取EKF轨迹参数
+  publish_ekf_trajectory_ = this->get_parameter("publish_ekf_trajectory").as_bool();
+  ekf_odom_topic_ = this->get_parameter("ekf_odom_topic").as_string();
+  ekf_trajectory_topic_ = this->get_parameter("ekf_trajectory_topic").as_string();
+  ekf_trajectory_distance_threshold_ = this->get_parameter("ekf_trajectory_distance_threshold").as_double();
+  ekf_trajectory_angle_threshold_ = this->get_parameter("ekf_trajectory_angle_threshold").as_double();
+
   // 初始化串口
   if (!initSerial()) {
     RCLCPP_ERROR(this->get_logger(), "串口初始化失败");
@@ -119,13 +146,28 @@ RobotChassisNode::RobotChassisNode()
   imu_pub_ = this->create_publisher<sensor_msgs::msg::Imu>(imu_topic_, 10);
   tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
 
+  // 创建EKF轨迹发布者（如果启用）
+  if (publish_ekf_trajectory_) {
+    ekf_trajectory_pub_ = this->create_publisher<nav_msgs::msg::Path>(ekf_trajectory_topic_, 10);
+    ekf_odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
+        ekf_odom_topic_, 10,
+        std::bind(&RobotChassisNode::ekfOdomCallback, this, std::placeholders::_1));
+
+    // 初始化EKF轨迹消息
+    ekf_trajectory_.header.frame_id = "odom";  // EKF融合后的轨迹在odom坐标系下
+
+    RCLCPP_INFO(this->get_logger(), "EKF轨迹发布已启用: 订阅%s, 发布%s",
+                ekf_odom_topic_.c_str(), ekf_trajectory_topic_.c_str());
+  }
+
   // 初始化编码器历史
   for (int i = 0; i < 4; i++) {
     last_encoders_[i] = 0;
   }
 
   // 初始化轨迹消息
-  odom_path_.header.frame_id = wheel_odom_frame_id_;
+  odom_path_.header.frame_id = wheel_odom_frame_id_;  // 轮速轨迹在wheel_odom坐标系下
+  // 注意：轮速轨迹的坐标系与EKF轨迹的坐标系不同，便于在RViz中对比两种里程计的差异
 
   // 启动串口读取线程
   read_thread_ = std::thread(&RobotChassisNode::serialReadThread, this);
@@ -657,7 +699,10 @@ void RobotChassisNode::publishOdometry(const RawSensorData& sensor_data) {
   nav_msgs::msg::Odometry odom_msg;
   odom_msg.header.stamp = ros_time;
   odom_msg.header.frame_id = wheel_odom_frame_id_;
-  odom_msg.child_frame_id = wheel_base_frame_id_;
+  odom_msg.child_frame_id = "base_link";  // 使用base_link，让EKF正确处理
+  // 注意：此Odometry消息的child_frame_id设为"base_link"，是为了与robot_localization EKF节点对接
+  // EKF配置文件中base_link_frame设为"base_link"，期望输入的odometry消息的child_frame_id也是"base_link"
+  // 这样EKF才能正确融合轮速和IMU数据，最终输出odom → base_link的TF变换
 
   // 位置
   odom_msg.pose.pose.position.x = odom_x_;
@@ -673,9 +718,15 @@ void RobotChassisNode::publishOdometry(const RawSensorData& sensor_data) {
   odom_msg.pose.pose.orientation.w = q.w();
 
   // 速度（使用实际时间差计算）
-  odom_msg.twist.twist.linear.x = delta_distance / dt;
+  double current_linear_x = delta_distance / dt;
+  double current_angular_z = delta_theta / dt;
+
+  odom_msg.twist.twist.linear.x = current_linear_x;
   odom_msg.twist.twist.linear.y = 0.0;
-  odom_msg.twist.twist.angular.z = delta_theta / dt;
+  odom_msg.twist.twist.angular.z = current_angular_z;
+
+  // 更新轮速历史（用于IMU静止检测）
+  updateVelocityHistory(current_linear_x, current_angular_z, sensor_data.timestamp_us);
 
   // 设置协方差
   for (int i = 0; i < 36; i++) {
@@ -687,6 +738,15 @@ void RobotChassisNode::publishOdometry(const RawSensorData& sensor_data) {
   odom_pub_->publish(odom_msg);
 
   // 发布TF变换（wheel_odom → wheel_base_link）
+  //
+  // 设计说明：
+  // 1. Odometry消息：wheel_odom → base_link（给EKF节点作为输入数据）
+  // 2. TF变换：wheel_odom → wheel_base_link（用于可视化纯轮速积分效果）
+  //
+  // 这样可以形成两条独立的TF链：
+  // - odom → base_link（EKF融合后的机器人位姿）
+  // - odom → wheel_odom → wheel_base_link（纯轮速积分的机器人位姿）
+  // dodm → wheel_odom是一个静态变换，用于将轮速计连接到odom上便于同时 观察比较
   geometry_msgs::msg::TransformStamped odom_tf;
   odom_tf.header.stamp = ros_time;
   odom_tf.header.frame_id = wheel_odom_frame_id_;
@@ -741,11 +801,6 @@ void RobotChassisNode::publishOdometry(const RawSensorData& sensor_data) {
 
 /**
  * @brief 使用Welford在线算法更新IMU校准统计
- *
- * Welford算法优点：
- * - 数值稳定性好（避免相减抵消）
- * - 只需遍历数据一次
- * - 只需存储mean和M2，内存占用小
  */
 void RobotChassisNode::updateIMUCalibration(const RawSensorData& sensor_data) {
   // 更新陀螺仪三轴统计
@@ -858,7 +913,6 @@ void RobotChassisNode::publishIMU(const RawSensorData& sensor_data) {
   imu_msg.header.frame_id = imu_frame_id_;
 
   // 欧拉角转四元数（roll, pitch, yaw）
-  // 注意：MCU上报的是[pitch, roll, yaw]，单位0.01度
   // 暂时不发布MCU DMP的四元数，让滤波器自行计算
   // double roll = sensor_data.euler[1] / 100.0 * M_PI / 180.0;   // 弧度
   // double pitch = sensor_data.euler[0] / 100.0 * M_PI / 180.0;  // 弧度
@@ -877,15 +931,27 @@ void RobotChassisNode::publishIMU(const RawSensorData& sensor_data) {
   imu_msg.orientation.z = 0.0;
   imu_msg.orientation.w = 0.0;
 
-  // 陀螺仪数据（单位：0.01弧度/s → 弧度/s）
-  // 应用零偏补偿和死区滤波
-  double gyro_x_raw = sensor_data.gyro[0] / 100.0;
-  double gyro_y_raw = sensor_data.gyro[1] / 100.0;
-  double gyro_z_raw = sensor_data.gyro[2] / 100.0;
+  // 检查底盘是否静止（基于轮速约束）
+  bool is_static = checkStaticState(sensor_data.timestamp_us);
 
-  double gyro_x_calibrated = applyCalibration(gyro_x_raw, gyro_stats_[0]);
-  double gyro_y_calibrated = applyCalibration(gyro_y_raw, gyro_stats_[1]);
-  double gyro_z_calibrated = applyCalibration(gyro_z_raw, gyro_stats_[2]);
+  // 陀螺仪数据（单位：0.01弧度/s → 弧度/s）
+  double gyro_x_calibrated, gyro_y_calibrated, gyro_z_calibrated;
+
+  if (is_static) {
+    // 静止时，角速度置零
+    gyro_x_calibrated = 0.0;
+    gyro_y_calibrated = 0.0;
+    gyro_z_calibrated = 0.0;
+  } else {
+    // 运动时，应用零偏补偿和死区滤波
+    double gyro_x_raw = sensor_data.gyro[0] / 100.0;
+    double gyro_y_raw = sensor_data.gyro[1] / 100.0;
+    double gyro_z_raw = sensor_data.gyro[2] / 100.0;
+
+    gyro_x_calibrated = applyCalibration(gyro_x_raw, gyro_stats_[0]);
+    gyro_y_calibrated = applyCalibration(gyro_y_raw, gyro_stats_[1]);
+    gyro_z_calibrated = applyCalibration(gyro_z_raw, gyro_stats_[2]);
+  }
 
   // 坐标系变换：将IMU坐标系对齐到底盘坐标系
   // 变换规则：新X = 旧Y，新Y = -旧X，新Z = 旧Z（绕Z轴旋转90度）
@@ -897,26 +963,32 @@ void RobotChassisNode::publishIMU(const RawSensorData& sensor_data) {
   // g = 9.80665 m/s²
   constexpr double G_TO_ACCEL = 9.80665;
 
-  double accel_x_raw = sensor_data.accel[0] / 100.0 * G_TO_ACCEL;
-  double accel_y_raw = sensor_data.accel[1] / 100.0 * G_TO_ACCEL;
-  double accel_z_raw = sensor_data.accel[2] / 100.0 * G_TO_ACCEL;
+  double accel_x_calibrated, accel_y_calibrated, accel_z_calibrated;
 
-  // 应用零偏补偿和死区滤波
-  double accel_x_calibrated = applyCalibration(accel_x_raw, accel_stats_[0]);
-  double accel_y_calibrated = applyCalibration(accel_y_raw, accel_stats_[1]);
-  double accel_z_calibrated = applyCalibration(accel_z_raw, accel_stats_[2]);
+  if (is_static) {
+    // 静止时，加速度计XY轴置零，Z轴置为重力加速度g
+    accel_x_calibrated = 0.0;
+    accel_y_calibrated = 0.0;
+    accel_z_calibrated = 9.80665;  // 重力加速度
+  } else {
+    // 运动时，应用零偏补偿和死区滤波
+    double accel_x_raw = sensor_data.accel[0] / 100.0 * G_TO_ACCEL;
+    double accel_y_raw = sensor_data.accel[1] / 100.0 * G_TO_ACCEL;
+    double accel_z_raw = sensor_data.accel[2] / 100.0 * G_TO_ACCEL;
+
+    accel_x_calibrated = applyCalibration(accel_x_raw, accel_stats_[0]);
+    accel_y_calibrated = applyCalibration(accel_y_raw, accel_stats_[1]);
+    // Z轴：减去零偏后，再加上重力加速度9.8
+    accel_z_calibrated = applyCalibration(accel_z_raw, accel_stats_[2]) + 9.80665;
+  }
 
   // 坐标系变换：将IMU坐标系对齐到底盘坐标系
   // 变换规则：新X = 旧Y，新Y = -旧X，新Z = 旧Z（绕Z轴旋转90度）
   imu_msg.linear_acceleration.x = accel_y_calibrated;   // 新X = 旧Y
   imu_msg.linear_acceleration.y = -accel_x_calibrated;  // 新Y = -旧X
-
-  // Z轴加速度：减去零偏后，再加上重力加速度9.8（Z轴不变）
-  imu_msg.linear_acceleration.z = accel_z_calibrated + 9.80665;
+  imu_msg.linear_acceleration.z = accel_z_calibrated;   // Z轴不变
 
   // 设置协方差
-  // orientation_covariance设为全0，表示orientation数据不可用
-  // 这样滤波器会忽略orientation字段，只使用陀螺仪和加速度自行计算姿态
   for (int i = 0; i < 9; i++) {
     imu_msg.orientation_covariance[i] = 0.0;
   }
@@ -928,4 +1000,139 @@ void RobotChassisNode::publishIMU(const RawSensorData& sensor_data) {
 
   // 发布IMU消息
   imu_pub_->publish(imu_msg);
+}
+
+// ==================== EKF轨迹发布 ====================
+
+/**
+ * @brief EKF里程计回调函数
+ *
+ * 根据EKF融合后的里程计数据发布轨迹
+ */
+void RobotChassisNode::ekfOdomCallback(const nav_msgs::msg::Odometry::SharedPtr msg) {
+  // 提取当前位置
+  double current_x = msg->pose.pose.position.x;
+  double current_y = msg->pose.pose.position.y;
+
+  // 从四元数提取航向角
+  tf2::Quaternion q(
+    msg->pose.pose.orientation.x,
+    msg->pose.pose.orientation.y,
+    msg->pose.pose.orientation.z,
+    msg->pose.pose.orientation.w);
+
+  tf2::Matrix3x3 m(q);
+  double roll, pitch, yaw;
+  m.getRPY(roll, pitch, yaw);
+  double current_theta = yaw;
+
+  // 计算与上次轨迹点的距离和角度差
+  double dx = current_x - last_ekf_x_;
+  double dy = current_y - last_ekf_y_;
+  double distance = std::sqrt(dx * dx + dy * dy);
+
+  // 归一化角度差到[-π, π]
+  double dtheta = current_theta - last_ekf_theta_;
+  while (dtheta > M_PI) dtheta -= 2.0 * M_PI;
+  while (dtheta < -M_PI) dtheta += 2.0 * M_PI;
+  double angle_diff = std::abs(dtheta);
+
+  // 判断是否需要添加新的轨迹点
+  if (distance > ekf_trajectory_distance_threshold_ || angle_diff > ekf_trajectory_angle_threshold_) {
+    geometry_msgs::msg::PoseStamped pose_stamped;
+    pose_stamped.header = msg->header;
+    pose_stamped.pose = msg->pose.pose;
+
+    ekf_trajectory_.poses.push_back(pose_stamped);
+    ekf_trajectory_.header = msg->header;
+
+    // 发布轨迹
+    ekf_trajectory_pub_->publish(ekf_trajectory_);
+
+    // 更新上次轨迹点
+    last_ekf_x_ = current_x;
+    last_ekf_y_ = current_y;
+    last_ekf_theta_ = current_theta;
+  }
+}
+
+// ==================== 轮速约束IMU零偏 ====================
+
+/**
+ * @brief 更新轮速历史记录
+ *
+ * @param linear_x 当前线速度（m/s）
+ * @param angular_z 当前角速度（rad/s）
+ * @param timestamp_us 当前时间戳（微秒）
+ */
+void RobotChassisNode::updateVelocityHistory(double linear_x, double angular_z, int64_t timestamp_us) {
+  // 添加新的速度样本
+  VelocitySample sample;
+  sample.linear_x = linear_x;
+  sample.angular_z = angular_z;
+  sample.timestamp_us = timestamp_us;
+  velocity_history_.push_back(sample);
+
+  // 移除超出时间窗口的旧样本
+  int64_t window_us = static_cast<int64_t>(static_time_window_ * 1000000);
+  while (!velocity_history_.empty() &&
+         (timestamp_us - velocity_history_.front().timestamp_us) > window_us) {
+    velocity_history_.erase(velocity_history_.begin());
+  }
+}
+
+/**
+ * @brief 检查底盘是否处于静止状态
+ *
+ * @param current_timestamp_us 当前时间戳（微秒）
+ * @return true=静止，false=运动中
+ */
+bool RobotChassisNode::checkStaticState(int64_t current_timestamp_us) {
+  if (velocity_history_.empty()) {
+    return false;
+  }
+
+  // 检查整个时间窗口内的所有样本
+  bool all_below_threshold = true;
+  for (const auto& sample : velocity_history_) {
+    // 判断线速度和角速度是否都小于阈值
+    if (std::abs(sample.linear_x) > velocity_threshold_ ||
+        std::abs(sample.angular_z) > velocity_threshold_) {
+      all_below_threshold = false;
+      break;
+    }
+  }
+
+  if (all_below_threshold) {
+    // 如果一直静止，记录静止开始时间
+    if (static_start_time_us_ == 0) {
+      static_start_time_us_ = current_timestamp_us;
+      is_static_ = false;
+    } else {
+      // 检查是否持续静止超过时间窗口
+      int64_t static_duration_us = current_timestamp_us - static_start_time_us_;
+      int64_t window_us = static_cast<int64_t>(static_time_window_ * 1000000);
+      is_static_ = (static_duration_us >= window_us);
+    }
+  } else {
+    // 检测到运动，重置静止状态
+    static_start_time_us_ = 0;
+    is_static_ = false;
+  }
+
+  // 检测状态变化并输出日志
+  if (is_static_ != was_static_) {
+    if (is_static_) {
+      // 从运动变为静止
+      RCLCPP_INFO(this->get_logger(),
+                  "[IMU零漂约束] 检测到底盘静止，启用轮速约束（角速度置零，加速度修正为重力）");
+    } else {
+      // 从静止变为运动
+      RCLCPP_INFO(this->get_logger(),
+                  "[IMU零漂约束] 检测到底盘开始运动，禁用轮速约束（恢复正常IMU数据）");
+    }
+    was_static_ = is_static_;
+  }
+
+  return is_static_;
 }
