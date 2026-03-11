@@ -43,9 +43,26 @@ ament_target_dependencies(robot_chassis_node
   serial
 )
 
+# Wheel odometry calibrator executable
+add_executable(wheel_odom_calibrator
+  src/wheel_odom_calibrator.cpp
+)
+
+ament_target_dependencies(wheel_odom_calibrator
+  rclcpp
+  geometry_msgs
+  nav_msgs
+  sensor_msgs
+  std_msgs
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+)
+
 # Install targets
 install(TARGETS
   robot_chassis_node
+  wheel_odom_calibrator
   DESTINATION lib/${PROJECT_NAME}
 )
 

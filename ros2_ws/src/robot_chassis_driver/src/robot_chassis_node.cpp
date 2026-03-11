@@ -60,6 +60,10 @@ RobotChassisNode::RobotChassisNode()
   this->declare_parameter("imu_angular_velocity_covariance", std::vector<double>{0.001, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.001});
   this->declare_parameter("imu_linear_acceleration_covariance", std::vector<double>{0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01});
 
+  // 轮速计校准系数
+  this->declare_parameter("odometry_linear_scale", 1.0);
+  this->declare_parameter("odometry_angular_scale", 1.0);
+
   // IMU校准参数
   this->declare_parameter("imu_calibration_frames", 100);
   this->declare_parameter("imu_deadzone_sigma", 3.0);
@@ -99,6 +103,11 @@ RobotChassisNode::RobotChassisNode()
   encoder_ppr_ = this->get_parameter("encoder_ppr").as_double();
   wheel_radius_ = this->get_parameter("wheel_radius").as_double();
   wheelbase_ = this->get_parameter("wheelbase").as_double();
+
+  // 获取轮速计校准系数
+  odometry_linear_scale_ = this->get_parameter("odometry_linear_scale").as_double();
+  odometry_angular_scale_ = this->get_parameter("odometry_angular_scale").as_double();
+
   wheel_odom_frame_id_ = this->get_parameter("wheel_odom_frame_id").as_string();
   wheel_base_frame_id_ = this->get_parameter("wheel_base_frame_id").as_string();
   imu_frame_id_ = this->get_parameter("imu_frame_id").as_string();
@@ -687,6 +696,10 @@ void RobotChassisNode::publishOdometry(const RawSensorData& sensor_data) {
   double delta_distance = (left_delta + right_delta) / 2.0;
   double delta_theta = (right_delta - left_delta) / wheelbase_;
 
+  // 应用轮速计校准系数
+  delta_distance *= odometry_linear_scale_;
+  delta_theta *= odometry_angular_scale_;
+
   // 更新位姿
   odom_x_ += delta_distance * std::cos(odom_theta_);
   odom_y_ += delta_distance * std::sin(odom_theta_);
@@ -725,6 +738,10 @@ void RobotChassisNode::publishOdometry(const RawSensorData& sensor_data) {
   // 速度（使用实际时间差计算）
   double current_linear_x = delta_distance / dt;
   double current_angular_z = delta_theta / dt;
+
+  // 应用轮速计校准系数
+  current_linear_x *= odometry_linear_scale_;
+  current_angular_z *= odometry_angular_scale_;
 
   odom_msg.twist.twist.linear.x = current_linear_x;
   odom_msg.twist.twist.linear.y = 0.0;

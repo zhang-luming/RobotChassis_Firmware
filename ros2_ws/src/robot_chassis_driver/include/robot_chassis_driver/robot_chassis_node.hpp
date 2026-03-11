@@ -229,6 +229,10 @@ class RobotChassisNode : public rclcpp::Node {
   double wheel_radius_;      // 轮半径（米）
   double wheelbase_;         // 轮距（米）
 
+  // 轮速计校准系数（从配置文件读取）
+  double odometry_linear_scale_;   // 线速度校准系数
+  double odometry_angular_scale_;  // 角速度校准系数
+
   // 坐标系参数（从配置文件读取）
   std::string wheel_odom_frame_id_;
   std::string wheel_base_frame_id_;
