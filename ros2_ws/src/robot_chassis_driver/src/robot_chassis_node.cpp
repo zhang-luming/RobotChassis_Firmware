@@ -46,8 +46,12 @@ RobotChassisNode::RobotChassisNode()
   this->declare_parameter("wheel_odom_frame_id", "wheel_odom");
   this->declare_parameter("wheel_base_frame_id", "wheel_base_link");
   this->declare_parameter("imu_frame_id", "imu_link");
-  this->declare_parameter("path_distance_threshold", 0.05);
-  this->declare_parameter("path_angle_threshold", 0.1);
+
+  // 轨迹发布参数
+  this->declare_parameter("publish_trajectory", true);
+  this->declare_parameter("trajectory_distance_threshold", 0.05);
+  this->declare_parameter("trajectory_angle_threshold", 0.1);
+
   this->declare_parameter("cmd_vel_topic", "/cmd_vel");
   this->declare_parameter("wheel_odom_topic", "/wheel_odom");
   this->declare_parameter("wheel_odom_path_topic", "/wheel_odom_path");
@@ -64,12 +68,12 @@ RobotChassisNode::RobotChassisNode()
   this->declare_parameter("imu_velocity_threshold", 0.01);
   this->declare_parameter("imu_static_time_window", 1.0);
 
-  // EKF轨迹发布参数
-  this->declare_parameter("publish_ekf_trajectory", false);
-  this->declare_parameter("ekf_odom_topic", "/odom");
+  // 轨迹发布参数
+  this->declare_parameter("publish_trajectory", true);
+  this->declare_parameter("trajectory_distance_threshold", 0.05);
+  this->declare_parameter("trajectory_angle_threshold", 0.1);
+  this->declare_parameter("wheel_odom_path_topic", "/wheel_odom_path");
   this->declare_parameter("ekf_trajectory_topic", "/ekf_trajectory");
-  this->declare_parameter("ekf_trajectory_distance_threshold", 0.05);
-  this->declare_parameter("ekf_trajectory_angle_threshold", 0.1);
 
   this->declare_parameter("odom_pose_covariance", std::vector<double>{
     0.01, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -98,11 +102,16 @@ RobotChassisNode::RobotChassisNode()
   wheel_odom_frame_id_ = this->get_parameter("wheel_odom_frame_id").as_string();
   wheel_base_frame_id_ = this->get_parameter("wheel_base_frame_id").as_string();
   imu_frame_id_ = this->get_parameter("imu_frame_id").as_string();
-  path_distance_threshold_ = this->get_parameter("path_distance_threshold").as_double();
-  path_angle_threshold_ = this->get_parameter("path_angle_threshold").as_double();
+
+  // 获取轨迹发布参数
+  publish_trajectory_ = this->get_parameter("publish_trajectory").as_bool();
+  trajectory_distance_threshold_ = this->get_parameter("trajectory_distance_threshold").as_double();
+  trajectory_angle_threshold_ = this->get_parameter("trajectory_angle_threshold").as_double();
+  wheel_odom_path_topic_ = this->get_parameter("wheel_odom_path_topic").as_string();
+  ekf_trajectory_topic_ = this->get_parameter("ekf_trajectory_topic").as_string();
+
   cmd_vel_topic_ = this->get_parameter("cmd_vel_topic").as_string();
   wheel_odom_topic_ = this->get_parameter("wheel_odom_topic").as_string();
-  wheel_odom_path_topic_ = this->get_parameter("wheel_odom_path_topic").as_string();
   imu_topic_ = this->get_parameter("imu_topic").as_string();
   imu_orientation_covariance_ = this->get_parameter("imu_orientation_covariance").as_double_array();
   imu_angular_velocity_covariance_ = this->get_parameter("imu_angular_velocity_covariance").as_double_array();
@@ -122,13 +131,6 @@ RobotChassisNode::RobotChassisNode()
   is_static_ = false;
   was_static_ = false;
 
-  // 获取EKF轨迹参数
-  publish_ekf_trajectory_ = this->get_parameter("publish_ekf_trajectory").as_bool();
-  ekf_odom_topic_ = this->get_parameter("ekf_odom_topic").as_string();
-  ekf_trajectory_topic_ = this->get_parameter("ekf_trajectory_topic").as_string();
-  ekf_trajectory_distance_threshold_ = this->get_parameter("ekf_trajectory_distance_threshold").as_double();
-  ekf_trajectory_angle_threshold_ = this->get_parameter("ekf_trajectory_angle_threshold").as_double();
-
   // 初始化串口
   if (!initSerial()) {
     RCLCPP_ERROR(this->get_logger(), "串口初始化失败");
@@ -142,22 +144,25 @@ RobotChassisNode::RobotChassisNode()
 
   // 创建里程计发布者
   odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>(wheel_odom_topic_, 10);
-  path_pub_ = this->create_publisher<nav_msgs::msg::Path>(wheel_odom_path_topic_, 10);
   imu_pub_ = this->create_publisher<sensor_msgs::msg::Imu>(imu_topic_, 10);
   tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
 
-  // 创建EKF轨迹发布者（如果启用）
-  if (publish_ekf_trajectory_) {
+  // 创建轨迹发布者（如果启用）
+  if (publish_trajectory_) {
+    // 轮速里程计轨迹
+    path_pub_ = this->create_publisher<nav_msgs::msg::Path>(wheel_odom_path_topic_, 10);
+
+    // EKF融合轨迹
     ekf_trajectory_pub_ = this->create_publisher<nav_msgs::msg::Path>(ekf_trajectory_topic_, 10);
     ekf_odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
-        ekf_odom_topic_, 10,
+        "/odom", 10,
         std::bind(&RobotChassisNode::ekfOdomCallback, this, std::placeholders::_1));
 
     // 初始化EKF轨迹消息
     ekf_trajectory_.header.frame_id = "odom";  // EKF融合后的轨迹在odom坐标系下
 
-    RCLCPP_INFO(this->get_logger(), "EKF轨迹发布已启用: 订阅%s, 发布%s",
-                ekf_odom_topic_.c_str(), ekf_trajectory_topic_.c_str());
+    RCLCPP_INFO(this->get_logger(), "轨迹发布已启用: 轮速轨迹=%s, EKF轨迹=%s",
+                wheel_odom_path_topic_.c_str(), ekf_trajectory_topic_.c_str());
   }
 
   // 初始化编码器历史
@@ -763,37 +768,39 @@ void RobotChassisNode::publishOdometry(const RawSensorData& sensor_data) {
 
   tf_broadcaster_->sendTransform(odom_tf);
 
-  // 发布轨迹（根据距离和角度阈值）
-  double dx = odom_x_ - last_path_x_;
-  double dy = odom_y_ - last_path_y_;
-  double distance = std::sqrt(dx * dx + dy * dy);
+  // 发布轮速轨迹（根据距离和角度阈值）
+  if (publish_trajectory_) {
+    double dx = odom_x_ - last_path_x_;
+    double dy = odom_y_ - last_path_y_;
+    double distance = std::sqrt(dx * dx + dy * dy);
 
-  // 归一化角度差到[-π, π]
-  double dtheta = odom_theta_ - last_path_theta_;
-  while (dtheta > M_PI) dtheta -= 2.0 * M_PI;
-  while (dtheta < -M_PI) dtheta += 2.0 * M_PI;
-  double angle_diff = std::abs(dtheta);
+    // 归一化角度差到[-π, π]
+    double dtheta = odom_theta_ - last_path_theta_;
+    while (dtheta > M_PI) dtheta -= 2.0 * M_PI;
+    while (dtheta < -M_PI) dtheta += 2.0 * M_PI;
+    double angle_diff = std::abs(dtheta);
 
-  // 判断是否需要添加新的轨迹点
-  if (distance > path_distance_threshold_ || angle_diff > path_angle_threshold_) {
-    geometry_msgs::msg::PoseStamped pose_stamped;
-    pose_stamped.header.stamp = ros_time;
-    pose_stamped.header.frame_id = wheel_odom_frame_id_;
-    pose_stamped.pose.position.x = odom_x_;
-    pose_stamped.pose.position.y = odom_y_;
-    pose_stamped.pose.position.z = 0.0;
-    pose_stamped.pose.orientation = odom_msg.pose.pose.orientation;
+    // 判断是否需要添加新的轨迹点
+    if (distance > trajectory_distance_threshold_ || angle_diff > trajectory_angle_threshold_) {
+      geometry_msgs::msg::PoseStamped pose_stamped;
+      pose_stamped.header.stamp = ros_time;
+      pose_stamped.header.frame_id = wheel_odom_frame_id_;
+      pose_stamped.pose.position.x = odom_x_;
+      pose_stamped.pose.position.y = odom_y_;
+      pose_stamped.pose.position.z = 0.0;
+      pose_stamped.pose.orientation = odom_msg.pose.pose.orientation;
 
-    odom_path_.poses.push_back(pose_stamped);
-    odom_path_.header.stamp = ros_time;
+      odom_path_.poses.push_back(pose_stamped);
+      odom_path_.header.stamp = ros_time;
 
-    // 发布轨迹
-    path_pub_->publish(odom_path_);
+      // 发布轨迹
+      path_pub_->publish(odom_path_);
 
-    // 更新上次轨迹点
-    last_path_x_ = odom_x_;
-    last_path_y_ = odom_y_;
-    last_path_theta_ = odom_theta_;
+      // 更新上次轨迹点
+      last_path_x_ = odom_x_;
+      last_path_y_ = odom_y_;
+      last_path_theta_ = odom_theta_;
+    }
   }
 }
 
@@ -1037,8 +1044,8 @@ void RobotChassisNode::ekfOdomCallback(const nav_msgs::msg::Odometry::SharedPtr 
   while (dtheta < -M_PI) dtheta += 2.0 * M_PI;
   double angle_diff = std::abs(dtheta);
 
-  // 判断是否需要添加新的轨迹点
-  if (distance > ekf_trajectory_distance_threshold_ || angle_diff > ekf_trajectory_angle_threshold_) {
+  // 判断是否需要添加新的轨迹点（使用统一阈值参数）
+  if (distance > trajectory_distance_threshold_ || angle_diff > trajectory_angle_threshold_) {
     geometry_msgs::msg::PoseStamped pose_stamped;
     pose_stamped.header = msg->header;
     pose_stamped.pose = msg->pose.pose;

@@ -222,7 +222,6 @@ class RobotChassisNode : public rclcpp::Node {
   // 话题名（从配置文件读取）
   std::string cmd_vel_topic_;
   std::string wheel_odom_topic_;
-  std::string wheel_odom_path_topic_;
   std::string imu_topic_;
 
   // 机械参数（从配置文件读取）
@@ -235,16 +234,14 @@ class RobotChassisNode : public rclcpp::Node {
   std::string wheel_base_frame_id_;
   std::string imu_frame_id_;
 
-  // 轨迹参数（从配置文件读取）
-  double path_distance_threshold_;
-  double path_angle_threshold_;
+  // 轨迹发布参数（从配置文件读取）
+  bool publish_trajectory_;               // 是否发布轨迹（统一开关）
+  double trajectory_distance_threshold_;  // 轨迹距离阈值（统一参数）
+  double trajectory_angle_threshold_;     // 轨迹角度阈值（统一参数）
 
-  // EKF轨迹参数（从配置文件读取）
-  bool publish_ekf_trajectory_;           // 是否发布EKF轨迹
-  std::string ekf_odom_topic_;            // EKF里程计话题
-  std::string ekf_trajectory_topic_;      // EKF轨迹话题
-  double ekf_trajectory_distance_threshold_;   // EKF轨迹距离阈值
-  double ekf_trajectory_angle_threshold_;      // EKF轨迹角度阈值
+  // 轨迹话题名（从配置文件读取）
+  std::string wheel_odom_path_topic_;     // 轮速里程计轨迹话题
+  std::string ekf_trajectory_topic_;      // EKF融合轨迹话题
 
   // 协方差参数（从配置文件读取）
   std::vector<double> imu_orientation_covariance_;

@@ -45,9 +45,6 @@
     # 轮速里程计发布话题
     wheel_odom_topic: "/wheel_odom"
 
-    # 轨迹发布话题
-    wheel_odom_path_topic: "/wheel_odom_path"
-
     # IMU数据发布话题
     imu_topic: "/imu/data_raw"
 
@@ -117,33 +114,25 @@
     imu_static_time_window: 1.0
 
     # ==========================================================================
-    # 轮速计轨迹发布配置
+    # 轨迹发布配置（统一控制轮速轨迹和EKF轨迹）
     # ==========================================================================
 
-    # 轨迹距离阈值（米）
-    path_distance_threshold: 0.05
+    # 是否发布轨迹（统一开关）
+    publish_trajectory: true
 
-    # 轨迹角度阈值（弧度）
-    path_angle_threshold: 0.1
+    # 轮速里程计轨迹话题
+    wheel_odom_path_topic: /wheel_odom_path
 
-    # ==========================================================================
-    # EKF轨迹发布配置
-    # ==========================================================================
-
-    # 是否发布EKF融合后的轨迹（订阅/odom话题）
-    publish_ekf_trajectory: true
-
-    # EKF里程计话题（用于轨迹发布）
-    ekf_odom_topic: /odom
-
-    # EKF轨迹话题
+    # EKF融合轨迹话题
     ekf_trajectory_topic: /ekf_trajectory
 
-    # EKF轨迹距离阈值（米）
-    ekf_trajectory_distance_threshold: 0.05
+    # 轨迹距离阈值（米）
+    # 当移动距离超过此值时添加新的轨迹点
+    trajectory_distance_threshold: 0.05
 
-    # EKF轨迹角度阈值（弧度）
-    ekf_trajectory_angle_threshold: 0.1
+    # 轨迹角度阈值（弧度）
+    # 当旋转角度超过此值时添加新的轨迹点
+    trajectory_angle_threshold: 0.1
 
     # ==========================================================================
     # 协方差配置
