@@ -27,7 +27,6 @@ include_directories(include)
 
 # Main executable
 add_executable(robot_chassis_node
-  src/robot_chassis_node_main.cpp
   src/robot_chassis_node.cpp
 )
 
