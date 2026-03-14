@@ -1,5 +1,3 @@
-// Copyright 2026 RobotChassis Project
-// Licensed under MIT License
 // 轮速里程计校准工具 - 以IMU为基准进行自动标定
 
 #ifndef ROBOT_CHASSIS_DRIVER__WHEEL_ODOM_CALIBRATOR_HPP_
